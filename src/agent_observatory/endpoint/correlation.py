@@ -5,7 +5,7 @@ from typing import Iterable
 
 from .network import TcpConnection
 from .roles import ProcessRole, classify_process_role
-from .windows_snapshot import ApplicationSnapshot
+from .application_models import ApplicationSnapshot
 
 
 @dataclass(frozen=True, slots=True)

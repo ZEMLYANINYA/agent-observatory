@@ -1,20 +1,14 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
-from .discovery import DiscoveredApplication, discover_root_processes
+from .application_models import ApplicationSnapshot
+from .discovery import discover_root_processes
 from .models import ProcessSnapshot
 from .process_tree import build_validated_process_tree
 from .roles import classify_process_role
-
-
-@dataclass(frozen=True, slots=True)
-class ApplicationSnapshot:
-    application: DiscoveredApplication
-    processes: tuple[ProcessSnapshot, ...]
 
 
 def _powershell_process_inventory() -> str:

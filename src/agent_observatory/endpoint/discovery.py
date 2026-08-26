@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Iterable
 
+from .application_models import (
+    ApplicationProfile,
+    DiscoveredApplication,
+)
 from .models import ProcessSnapshot
 
-
-@dataclass(frozen=True, slots=True)
-class ApplicationProfile:
-    name: str
-    process_names: tuple[str, ...]
 
 
 DEFAULT_PROFILES: tuple[ApplicationProfile, ...] = (
@@ -22,13 +20,6 @@ DEFAULT_PROFILES: tuple[ApplicationProfile, ...] = (
         process_names=("claude.exe",),
     ),
 )
-
-
-@dataclass(frozen=True, slots=True)
-class DiscoveredApplication:
-    profile: ApplicationProfile
-    root_process: ProcessSnapshot
-
 
 def discover_root_processes(
     processes: Iterable[ProcessSnapshot],
