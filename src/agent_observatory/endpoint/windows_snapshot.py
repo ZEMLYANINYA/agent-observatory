@@ -8,6 +8,7 @@ from typing import Iterable
 from .discovery import DiscoveredApplication, discover_root_processes
 from .models import ProcessSnapshot
 from .process_tree import build_validated_process_tree
+from .roles import classify_process_role
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,23 +20,19 @@ class ApplicationSnapshot:
 def _powershell_process_inventory() -> str:
     command = r"""
 Get-CimInstance Win32_Process |
-ForEach-Object {
-    $start = $null
-
-    try {
-        $start = (Get-Process -Id $_.ProcessId -ErrorAction Stop).StartTime.ToUniversalTime().ToString("o")
-    }
-    catch {
-        $start = $null
-    }
-
-    [PSCustomObject]@{
-        pid = $_.ProcessId
-        ppid = $_.ParentProcessId
-        name = $_.Name
-        started_at = $start
-    }
-} |
+Select-Object `
+    @{Name='pid';Expression={$_.ProcessId}},
+    @{Name='ppid';Expression={$_.ParentProcessId}},
+    @{Name='name';Expression={$_.Name}},
+    @{Name='started_at';Expression={
+        if ($_.CreationDate) {
+            $_.CreationDate.ToUniversalTime().ToString("o")
+        }
+        else {
+            $null
+        }
+    }},
+    @{Name='command_line';Expression={$_.CommandLine}} |
 ConvertTo-Json -Compress
 """
 
@@ -88,6 +85,7 @@ def collect_processes() -> tuple[ProcessSnapshot, ...]:
                 ppid=int(record["ppid"]),
                 name=str(record["name"]),
                 started_at=dt.timestamp(),
+                command_line=record.get("command_line"),
             )
         )
 
@@ -163,12 +161,20 @@ def format_snapshot(
         )
 
         for process in snapshot.processes:
-            lines.append(
-                f"  PID={process.pid:<6} "
-                f"PPID={process.ppid:<6} "
-                f"{process.name}"
+            role = classify_process_role(
+                process.command_line,
+                is_root=(
+                    process.pid
+                    == snapshot.application.root_process.pid
+                ),
             )
 
+            lines.append(
+                f" PID={process.pid:<6} "
+                f"PPID={process.ppid:<6} "
+                f"ROLE={role.value:<13} "
+                f"{process.name}"
+            )
         lines.append("")
 
     return "\n".join(lines).rstrip()

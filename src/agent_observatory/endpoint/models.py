@@ -18,6 +18,7 @@ class ProcessSnapshot:
     ppid: int
     name: str
     started_at: float
+    command_line: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
