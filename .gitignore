@@ -45,3 +45,5 @@ experiments/**/artifacts/*
 tmp/
 temp/
 *.tmp
+# Local Agent Observatory state
+.local/
