@@ -16,6 +16,15 @@ from .windows_snapshot import collect_application_snapshots
 def collect_live_snapshot() -> str:
     capture = collect_windows_capture()
 
+    observed_snapshots = collect_application_snapshots(
+        capture.processes_before
+    )
+    observed_pids = {
+        process.pid
+        for snapshot in observed_snapshots
+        for process in snapshot.processes
+    }
+
     process_snapshots = collect_application_snapshots(
         stable_processes(capture)
     )
@@ -27,13 +36,19 @@ def collect_live_snapshot() -> str:
     )
 
     output = format_network_snapshot(correlated)
-    rejected_count = len(rejected_tcp_connections(capture))
+    rejected_count = len(
+        rejected_tcp_connections(
+            capture,
+            observed_pids,
+        )
+    )
 
     if rejected_count:
         guard = (
             "Attribution guard: skipped "
-            f"{rejected_count} TCP connection(s) because the owning PID "
-            "was not stable across the bracketing process snapshots."
+            f"{rejected_count} TCP connection(s) for observed AI processes "
+            "because the owning PID was not stable across the bracketing "
+            "process snapshots."
         )
 
         if output:
