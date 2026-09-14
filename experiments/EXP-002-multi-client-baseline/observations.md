@@ -246,42 +246,86 @@ the startup time series or evidence of a discovery failure. A later direct
 `Win32_Process` check for Codex package paths and `codex*` process names also
 returned no processes.
 
-### Controlled isolated IDLE
+### Controlled isolated STARTUP
+
+A second isolated run was started for the state-by-state baseline:
 
 ```text
-Capture:
-Process count:
-Executable identities:
-TCP owners:
-Unknown/helper processes:
-Attribution guard:
-Notes:
+Capture: .local/exp002/20260914T080040Z-codex-startup.json
+Process count: 10
+TCP snapshot count: 10
+Unknown/helper processes: 3
+Attribution guard rejected: 0
 ```
+
+### Controlled isolated IDLE
+
+After approximately 60 seconds without the controlled query:
+
+```text
+Capture: .local/exp002/20260914T080147Z-codex-idle.json
+Process count: 21
+TCP snapshot count: 50
+Unknown/helper processes: 10
+Attribution guard rejected: 0
+```
+
+This second run independently reproduced substantial post-launch growth in the
+validated Codex process tree before the controlled query was sent.
 
 ### ACTIVE_QUERY
 
+The operator then sent the controlled query and sampled Codex repeatedly through
+the response lifecycle. These captures were accidentally invoked with the
+`IDLE` state argument, so the JSON metadata and filenames retain `idle`; the
+phase labels below come from the operator's contemporaneous notes and are not
+inferred from the capture metadata.
+
 ```text
-Query:
-Capture:
-Process count:
-Executable identities:
-TCP owners:
-Unknown/helper processes:
-Attribution guard:
-Notes:
+20260914T080444Z  processes=33  tcp=44  unknown=22  guard_rejected=0
+20260914T080458Z  processes=31  tcp=48  unknown=20  guard_rejected=0
+20260914T080503Z  processes=31  tcp=46  unknown=20  guard_rejected=0
+20260914T080511Z  processes=31  tcp=44  unknown=20  guard_rejected=0
+20260914T080515Z  processes=31  tcp=44  unknown=20  guard_rejected=0
 ```
+
+The observed process count reached 33 during the active sequence and then
+settled at 31 across four consecutive samples. TCP snapshot counts varied from
+44 to 48 and back to 44 during the same period. No attribution-guard rejection
+was observed.
 
 ### POST_ACTION_IDLE
 
+The operator recorded the following capture after the conversation had ended.
+It was also invoked with the `IDLE` state argument and therefore retains that
+label in the artifact metadata:
+
 ```text
-Capture:
-Process count:
-Executable identities:
-TCP owners:
-Unknown/helper processes:
-Attribution guard:
-Notes:
+Capture: .local/exp002/20260914T080623Z-codex-idle.json
+Process count: 30
+TCP snapshot count: 40
+Unknown/helper processes: 19
+Attribution guard rejected: 0
 ```
+
+### Codex preliminary finding
+
+Unlike the Claude run, Codex did not maintain a fixed observed process topology.
+In the second isolated run, the validated application tree grew from 10
+processes at startup to 21 after approximately one idle minute and reached 33
+around the controlled active phase before declining to 30 in the post-action
+capture. Unknown-role counts changed in parallel from 3 to 10 to 22 and then
+19. TCP snapshot counts were also dynamic but did not move monotonically with
+process count: 10 at startup, 50 at the first idle capture, 44-48 during the
+sampled active phase, and 40 afterward.
+
+Across all successful captures in this sequence, `guard_rejected=0`. This
+supports the narrow observation that Codex exhibited a substantially more
+dynamic validated descendant tree than Claude in these runs. It does not yet
+establish the purpose of the added helper processes, exact process lifetimes,
+or a causal relationship between the controlled query and any individual
+process or connection. The ACTIVE/POST_ACTION phase assignment for the
+mislabeled artifacts relies on the operator's contemporaneous annotations.
 
 ## Gemini
 
