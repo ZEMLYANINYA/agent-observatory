@@ -4,20 +4,44 @@ from .correlation import (
     correlate_application_network,
     format_network_snapshot,
 )
-from .windows_network import collect_tcp_connections
+from .windows_capture import (
+    attributable_tcp_connections,
+    collect_windows_capture,
+    rejected_tcp_connections,
+    stable_processes,
+)
 from .windows_snapshot import collect_application_snapshots
 
 
 def collect_live_snapshot() -> str:
-    process_snapshots = collect_application_snapshots()
-    tcp_connections = collect_tcp_connections()
+    capture = collect_windows_capture()
+
+    process_snapshots = collect_application_snapshots(
+        stable_processes(capture)
+    )
+    tcp_connections = attributable_tcp_connections(capture)
 
     correlated = correlate_application_network(
         process_snapshots,
         tcp_connections,
     )
 
-    return format_network_snapshot(correlated)
+    output = format_network_snapshot(correlated)
+    rejected_count = len(rejected_tcp_connections(capture))
+
+    if rejected_count:
+        guard = (
+            "Attribution guard: skipped "
+            f"{rejected_count} TCP connection(s) because the owning PID "
+            "was not stable across the bracketing process snapshots."
+        )
+
+        if output:
+            output = f"{output}\n\n{guard}"
+        else:
+            output = guard
+
+    return output
 
 
 def main() -> int:
