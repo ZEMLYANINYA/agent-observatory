@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import datetime
-from typing import Iterable
+from typing import Any, Iterable
 
 from .application_models import ApplicationSnapshot
 from .discovery import discover_root_processes
@@ -48,19 +49,9 @@ ConvertTo-Json -Compress
     return result.stdout
 
 
-def collect_processes() -> tuple[ProcessSnapshot, ...]:
-    import json
-
-    raw = _powershell_process_inventory().strip()
-
-    if not raw:
-        return ()
-
-    records = json.loads(raw)
-
-    if isinstance(records, dict):
-        records = [records]
-
+def parse_process_records(
+    records: Iterable[dict[str, Any]],
+) -> tuple[ProcessSnapshot, ...]:
     processes: list[ProcessSnapshot] = []
 
     for record in records:
@@ -70,7 +61,7 @@ def collect_processes() -> tuple[ProcessSnapshot, ...]:
             continue
 
         dt = datetime.fromisoformat(
-            started_at.replace("Z", "+00:00")
+            str(started_at).replace("Z", "+00:00")
         )
 
         processes.append(
@@ -84,6 +75,26 @@ def collect_processes() -> tuple[ProcessSnapshot, ...]:
         )
 
     return tuple(processes)
+
+
+def parse_process_inventory(raw: str) -> tuple[ProcessSnapshot, ...]:
+    raw = raw.strip()
+
+    if not raw:
+        return ()
+
+    records = json.loads(raw)
+
+    if isinstance(records, dict):
+        records = [records]
+
+    return parse_process_records(records)
+
+
+def collect_processes() -> tuple[ProcessSnapshot, ...]:
+    return parse_process_inventory(
+        _powershell_process_inventory()
+    )
 
 
 def _walk_validated_descendants(
