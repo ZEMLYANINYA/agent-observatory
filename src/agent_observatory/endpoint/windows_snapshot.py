@@ -27,7 +27,8 @@ Select-Object `
             $null
         }
     }},
-    @{Name='command_line';Expression={$_.CommandLine}} |
+    @{Name='command_line';Expression={$_.CommandLine}},
+    @{Name='executable_path';Expression={$_.ExecutablePath}} |
 ConvertTo-Json -Compress
 """
 
@@ -71,6 +72,7 @@ def parse_process_records(
                 name=str(record["name"]),
                 started_at=dt.timestamp(),
                 command_line=record.get("command_line"),
+                executable_path=record.get("executable_path"),
             )
         )
 
