@@ -4,7 +4,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 
 from .models import ProcessSnapshot
 from .network import TcpConnection
@@ -231,11 +231,26 @@ def attributable_tcp_connections(
 
 def rejected_tcp_connections(
     capture: WindowsCapture,
+    process_ids: Iterable[int] | None = None,
 ) -> tuple[TcpConnection, ...]:
-    attributable = set(attributable_tcp_connections(capture))
+    stable_pids = {
+        process.pid
+        for process in stable_processes(capture)
+    }
+    candidate_pids = (
+        set(process_ids)
+        if process_ids is not None
+        else {
+            connection.pid
+            for connection in capture.tcp_connections
+        }
+    )
 
     return tuple(
         connection
         for connection in capture.tcp_connections
-        if connection not in attributable
+        if (
+            connection.pid in candidate_pids
+            and connection.pid not in stable_pids
+        )
     )
