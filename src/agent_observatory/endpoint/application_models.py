@@ -7,8 +7,12 @@ from .models import ProcessSnapshot
 
 @dataclass(frozen=True, slots=True)
 class ApplicationProfile:
+    """Declarative evidence used to identify an application root process."""
+
     name: str
     process_names: tuple[str, ...]
+    executable_path_contains: tuple[str, ...] = ()
+    command_line_contains: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
