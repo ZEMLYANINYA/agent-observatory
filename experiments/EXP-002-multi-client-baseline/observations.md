@@ -211,17 +211,41 @@ appeared in the validated Codex descendant tree during the idle interval. It
 does not establish the purpose of those processes, whether they were performing
 repository indexing, or what caused their creation.
 
-### Controlled isolated STARTUP
+### Controlled isolated STARTUP time series
+
+After other configured desktop AI clients had been closed, Codex was started in
+isolation and sampled repeatedly during startup. The first attempted capture did
+not discover any configured application. Successful captures then showed a
+rapidly changing process tree followed by a stable observed plateau:
 
 ```text
-Capture:
-Process count:
-Executable identities:
-TCP owners:
-Unknown/helper processes:
-Attribution guard:
-Notes:
+20260914T074746Z  processes=10  tcp=12  unknown=3   guard_rejected=0
+20260914T074758Z  processes=21  tcp=28  unknown=10  guard_rejected=0
+20260914T074852Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T074855Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T074857Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T074859Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T074901Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T074906Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T074912Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T075018Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T075026Z  processes=16  tcp=32  unknown=5   guard_rejected=0
+20260914T075031Z  processes=16  tcp=32  unknown=5   guard_rejected=0
 ```
+
+Two immediately subsequent capture attempts reported `application 'Codex' not
+discovered; discovered: none`.
+
+The isolated startup sequence therefore shows an observed transition from 10 to
+21 to 16 processes, with TCP snapshot counts rising from 12 to 28 to 32 and the
+unknown-role count changing from 3 to 10 to 5. The `16 / 32 / 5` state was then
+observed repeatedly for more than one minute with no attribution-guard
+rejections.
+
+The final loss of discovery is recorded as an unresolved observation. These
+summary results alone do not establish whether the application exited, crashed,
+restarted outside the configured profile, or became undiscoverable for another
+reason. Process-level evidence is required before assigning a cause.
 
 ### Controlled isolated IDLE
 
