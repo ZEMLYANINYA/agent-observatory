@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from typing import Any, Iterable
 
 from .network import TcpConnection
 
@@ -37,17 +38,9 @@ ConvertTo-Json -Compress
     return result.stdout
 
 
-def parse_tcp_inventory(raw: str) -> tuple[TcpConnection, ...]:
-    raw = raw.strip()
-
-    if not raw:
-        return ()
-
-    records = json.loads(raw)
-
-    if isinstance(records, dict):
-        records = [records]
-
+def parse_tcp_records(
+    records: Iterable[dict[str, Any]],
+) -> tuple[TcpConnection, ...]:
     connections: list[TcpConnection] = []
 
     for record in records:
@@ -63,6 +56,20 @@ def parse_tcp_inventory(raw: str) -> tuple[TcpConnection, ...]:
         )
 
     return tuple(connections)
+
+
+def parse_tcp_inventory(raw: str) -> tuple[TcpConnection, ...]:
+    raw = raw.strip()
+
+    if not raw:
+        return ()
+
+    records = json.loads(raw)
+
+    if isinstance(records, dict):
+        records = [records]
+
+    return parse_tcp_records(records)
 
 
 def collect_tcp_connections() -> tuple[TcpConnection, ...]:
