@@ -127,6 +127,16 @@ class WindowsCaptureTests(unittest.TestCase):
             [connection.pid for connection in rejected_tcp_connections(capture)],
             [200, 300],
         )
+        self.assertEqual(
+            [
+                connection.pid
+                for connection in rejected_tcp_connections(
+                    capture,
+                    {100, 200},
+                )
+            ],
+            [200],
+        )
 
 
 if __name__ == "__main__":
