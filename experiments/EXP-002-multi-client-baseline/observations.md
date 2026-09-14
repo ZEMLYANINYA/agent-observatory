@@ -128,7 +128,90 @@ or causality between one user action and any individual TCP connection.
 
 ## Codex
 
-### STARTUP
+The first Codex sequence was captured while Gemini, Manus, and Perplexity were
+still running. It is therefore retained as a co-resident preliminary sequence,
+not the isolated controlled Codex baseline.
+
+An attempted very-early STARTUP capture did not discover Codex yet and reported
+only Gemini, Manus, and Perplexity. A subsequent capture succeeded after the
+Codex application root became observable. This is retained as evidence that the
+current point-in-time discovery can miss Codex during an early launch window.
+
+### Preliminary STARTUP
+
+```text
+Capture: .local/exp002/20260914T073917Z-codex-startup.json
+Root PID: 25056
+Process count: 13
+TCP snapshot count: 26
+Unknown/helper processes: 6
+Attribution guard rejected: 0
+```
+
+Observed name/role composition:
+
+```text
+ChatGPT.exe                  main       1   TCP=0
+ChatGPT.exe                  network    1   TCP=22
+ChatGPT.exe                  renderer   3   TCP=0
+ChatGPT.exe                  gpu        1   TCP=0
+ChatGPT.exe                  crashpad   1   TCP=0
+ChatGPT.exe                  unknown    1   TCP=0
+codex.exe                    unknown    1   TCP=4
+codex-computer-use-swift.exe unknown    1   TCP=0
+conhost.exe                  unknown    2   TCP=0
+node_repl.exe                unknown    1   TCP=0
+```
+
+All observed TCP was owned by two stable process instances in this snapshot:
+`ChatGPT.exe` with role `network` (PID 3032, 22 TCP) and `codex.exe`
+(PID 25112, 4 TCP).
+
+### Preliminary IDLE
+
+```text
+Capture: .local/exp002/20260914T074030Z-codex-idle.json
+Root PID: 25056
+Process count: 33
+TCP snapshot count: 70
+Unknown/helper processes: 23
+Attribution guard rejected: 0
+```
+
+Observed name/role composition:
+
+```text
+ChatGPT.exe                  main       1   TCP=0
+ChatGPT.exe                  network    1   TCP=56
+ChatGPT.exe                  renderer   6   TCP=0
+ChatGPT.exe                  gpu        1   TCP=0
+ChatGPT.exe                  crashpad   1   TCP=0
+ChatGPT.exe                  unknown    1   TCP=0
+codex.exe                    unknown    1   TCP=14
+codex-computer-use-swift.exe unknown    1   TCP=0
+cmd.exe                      unknown    2   TCP=0
+conhost.exe                  unknown    4   TCP=0
+git.exe                      unknown    4   TCP=0
+node_repl.exe                unknown    5   TCP=0
+node.exe                     unknown    5   TCP=0
+```
+
+The root PID remained 25056 between the two successful captures. The observed
+`ChatGPT.exe` network owner remained PID 3032 and `codex.exe` remained PID
+25112. TCP snapshot counts for those two owners increased from 22 to 56 and
+from 4 to 14 respectively.
+
+Between preliminary STARTUP and IDLE, the validated Codex descendant tree grew
+from 13 to 33 processes. The additional observed composition included three
+more renderers, two additional `conhost.exe` instances, and newly observed
+`cmd.exe`, `git.exe`, `node.exe`, and additional `node_repl.exe` instances.
+
+This supports only the observation that additional helper/tooling processes
+appeared in the validated Codex descendant tree during the idle interval. It
+does not establish the purpose of those processes, whether they were performing
+repository indexing, or what caused their creation.
+
+### Controlled isolated STARTUP
 
 ```text
 Capture:
@@ -140,7 +223,7 @@ Attribution guard:
 Notes:
 ```
 
-### IDLE
+### Controlled isolated IDLE
 
 ```text
 Capture:
@@ -343,7 +426,7 @@ Capture: .local/exp002/20260914T072142Z-all-coresidency.json
 
 ## Findings
 
-Do not treat the preliminary Claude result as a cross-client conclusion until
+Do not treat preliminary per-client results as cross-client conclusions until
 the remaining controlled client captures are complete.
 
 Separate:
