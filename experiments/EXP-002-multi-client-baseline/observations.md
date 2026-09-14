@@ -233,19 +233,18 @@ rapidly changing process tree followed by a stable observed plateau:
 20260914T075031Z  processes=16  tcp=32  unknown=5   guard_rejected=0
 ```
 
-Two immediately subsequent capture attempts reported `application 'Codex' not
-discovered; discovered: none`.
-
-The isolated startup sequence therefore shows an observed transition from 10 to
-21 to 16 processes, with TCP snapshot counts rising from 12 to 28 to 32 and the
+The isolated startup sequence shows an observed transition from 10 to 21 to 16
+processes, with TCP snapshot counts rising from 12 to 28 to 32 and the
 unknown-role count changing from 3 to 10 to 5. The `16 / 32 / 5` state was then
 observed repeatedly for more than one minute with no attribution-guard
 rejections.
 
-The final loss of discovery is recorded as an unresolved observation. These
-summary results alone do not establish whether the application exited, crashed,
-restarted outside the configured profile, or became undiscoverable for another
-reason. Process-level evidence is required before assigning a cause.
+After Codex was intentionally closed by the operator, two subsequent capture
+attempts reported `application 'Codex' not discovered; discovered: none`.
+Those post-close attempts are expected shutdown validation and are not part of
+the startup time series or evidence of a discovery failure. A later direct
+`Win32_Process` check for Codex package paths and `codex*` process names also
+returned no processes.
 
 ### Controlled isolated IDLE
 
