@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
 
+from .identity import capture_identity_key
 from .models import ProcessSnapshot
 from .network import TcpConnection
 from .windows_network import parse_tcp_records
@@ -58,7 +59,8 @@ $collectProcesses = {
                 $null
             }
         }},
-        @{Name='command_line';Expression={$_.CommandLine}}
+        @{Name='command_line';Expression={$_.CommandLine}},
+        @{Name='executable_path';Expression={$_.ExecutablePath}}
 }
 
 $processBeforeStartedAt = [DateTime]::UtcNow
@@ -183,17 +185,12 @@ def same_process_instance(
     """
     Conservatively decide whether two snapshots represent the same process.
 
-    PID alone is not sufficient because Windows may reuse it. Creation time is
-    the primary identity signal; name and command line are additional guards
-    against ambiguity when the platform reports coarse creation timestamps.
+    The comparison uses PID, PPID, creation time, executable name/path, and an
+    exact command-line digest. File hashing is intentionally excluded from this
+    time-sensitive guard and is performed after capture when requested.
     """
 
-    return (
-        before.pid == after.pid
-        and before.started_at == after.started_at
-        and before.name.casefold() == after.name.casefold()
-        and before.command_line == after.command_line
-    )
+    return capture_identity_key(before) == capture_identity_key(after)
 
 
 def stable_processes(

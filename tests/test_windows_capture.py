@@ -26,6 +26,7 @@ def _capture_payload() -> dict:
                 "name": "ChatGPT.exe",
                 "started_at": "2026-09-14T06:59:00.0000000Z",
                 "command_line": "ChatGPT.exe --type=browser",
+                "executable_path": "C:\\Apps\\ChatGPT.exe",
             },
             {
                 "pid": 200,
@@ -33,6 +34,7 @@ def _capture_payload() -> dict:
                 "name": "ChatGPT.exe",
                 "started_at": "2026-09-14T06:59:30.0000000Z",
                 "command_line": "ChatGPT.exe --type=renderer",
+                "executable_path": "C:\\Apps\\ChatGPT.exe",
             },
         ],
         "tcp_connections": [
@@ -68,6 +70,7 @@ def _capture_payload() -> dict:
                 "name": "ChatGPT.exe",
                 "started_at": "2026-09-14T06:59:00.0000000Z",
                 "command_line": "ChatGPT.exe --type=browser",
+                "executable_path": "c:/apps/chatgpt.exe",
             },
             {
                 "pid": 200,
@@ -75,6 +78,7 @@ def _capture_payload() -> dict:
                 "name": "other.exe",
                 "started_at": "2026-09-14T07:00:00.0600000Z",
                 "command_line": "other.exe",
+                "executable_path": "C:\\Temp\\other.exe",
             },
         ],
     }
@@ -87,6 +91,10 @@ class WindowsCaptureTests(unittest.TestCase):
         self.assertEqual(len(capture.processes_before), 2)
         self.assertEqual(len(capture.tcp_connections), 3)
         self.assertEqual(len(capture.processes_after), 2)
+        self.assertEqual(
+            capture.processes_before[0].executable_path,
+            "C:\\Apps\\ChatGPT.exe",
+        )
         self.assertGreater(capture.total_duration_seconds, 0.0)
         self.assertGreater(capture.network_interval.duration_seconds, 0.0)
 
@@ -97,6 +105,7 @@ class WindowsCaptureTests(unittest.TestCase):
             name="ChatGPT.exe",
             started_at=10.0,
             command_line="ChatGPT.exe --type=renderer",
+            executable_path="C:\\Apps\\ChatGPT.exe",
         )
         after = ProcessSnapshot(
             pid=200,
@@ -104,6 +113,27 @@ class WindowsCaptureTests(unittest.TestCase):
             name="other.exe",
             started_at=11.0,
             command_line="other.exe",
+            executable_path="C:\\Temp\\other.exe",
+        )
+
+        self.assertFalse(same_process_instance(before, after))
+
+    def test_same_process_instance_rejects_path_change(self) -> None:
+        before = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="ChatGPT.exe",
+            started_at=10.0,
+            command_line="ChatGPT.exe --type=renderer",
+            executable_path="C:\\Apps\\ChatGPT.exe",
+        )
+        after = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="ChatGPT.exe",
+            started_at=10.0,
+            command_line="ChatGPT.exe --type=renderer",
+            executable_path="C:\\Temp\\ChatGPT.exe",
         )
 
         self.assertFalse(same_process_instance(before, after))

@@ -12,13 +12,14 @@ class RelationState(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ProcessSnapshot:
-    """Minimal process identity used for process-tree attribution."""
+    """Minimal process evidence used for process-tree attribution."""
 
     pid: int
     ppid: int
     name: str
     started_at: float
     command_line: str | None = None
+    executable_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

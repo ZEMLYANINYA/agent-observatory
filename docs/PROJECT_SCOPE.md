@@ -51,7 +51,8 @@ Initial observation layers include:
 - process discovery
 - process trees
 - process creation and termination
-- command-line metadata
+- command-line metadata and exact command-line digests
+- executable paths and best-effort SHA-256 identities
 - local network sockets
 - filesystem activity
 - selected operating-system events
@@ -72,7 +73,8 @@ Initial observation layers include:
 Endpoint and network observations may be correlated using attributes such as:
 
 - timestamps
-- process identifiers
+- process identifiers and process-instance identity evidence
+- executable paths and hashes
 - local ports
 - remote addresses
 - remote ports
