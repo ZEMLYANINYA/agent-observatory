@@ -17,6 +17,10 @@ class TcpConnection:
     def is_established(self) -> bool:
         return self.state.casefold() == "established"
 
+    @property
+    def is_listening(self) -> bool:
+        return self.state.casefold() in {"listen", "listening"}
+
 
 def connections_by_pid(
     connections: Iterable[TcpConnection],
