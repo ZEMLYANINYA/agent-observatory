@@ -6,6 +6,7 @@ from agent_observatory.endpoint.identity import (
     FileIdentity,
 )
 from tools.exp002_capture import (
+    _capture_summary,
     _file_identity_payload,
     _hash_observation_payload,
     _next_schedule_slot,
@@ -58,6 +59,80 @@ class Exp002EvidenceSerializationTests(unittest.TestCase):
         self.assertEqual(payload["state"], "missing-path")
         self.assertIsNone(payload["observed_at"])
         self.assertIsNone(payload["hash_gap_ms"])
+
+
+class Exp002SummaryTests(unittest.TestCase):
+    def test_tcp_states_are_reported_separately(self) -> None:
+        evidence = {
+            "applications": [
+                {
+                    "process_count": 2,
+                    "attribution_guard_rejected_tcp_count": 0,
+                    "processes": [
+                        {
+                            "role": "main",
+                            "executable": {
+                                "hash_observation": {"state": "hashed"},
+                            },
+                            "tcp_connections": [
+                                {"state": "Bound"},
+                                {"state": "Established"},
+                                {"state": "Listen"},
+                            ],
+                        },
+                        {
+                            "role": "unknown",
+                            "executable": {
+                                "hash_observation": {"state": "hashed"},
+                            },
+                            "tcp_connections": [
+                                {"state": "ESTABLISHED"},
+                            ],
+                        },
+                    ],
+                }
+            ]
+        }
+
+        summary = _capture_summary(evidence)
+
+        self.assertEqual(summary["process_count"], 2)
+        self.assertEqual(summary["tcp_count"], 4)
+        self.assertEqual(summary["tcp_established_count"], 2)
+        self.assertEqual(summary["tcp_bound_count"], 1)
+        self.assertEqual(summary["tcp_other_count"], 1)
+        self.assertEqual(summary["unknown_count"], 1)
+        self.assertEqual(summary["non_hashed_count"], 0)
+        self.assertEqual(summary["guard_rejected_tcp_count"], 0)
+
+    def test_tcp_count_remains_backward_compatible_total(self) -> None:
+        evidence = {
+            "applications": [
+                {
+                    "process_count": 1,
+                    "attribution_guard_rejected_tcp_count": 0,
+                    "processes": [
+                        {
+                            "role": "main",
+                            "executable": {
+                                "hash_observation": {"state": "hashed"},
+                            },
+                            "tcp_connections": [
+                                {"state": "Bound"},
+                                {"state": "Bound"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        summary = _capture_summary(evidence)
+
+        self.assertEqual(summary["tcp_count"], 2)
+        self.assertEqual(summary["tcp_bound_count"], 2)
+        self.assertEqual(summary["tcp_established_count"], 0)
+        self.assertEqual(summary["tcp_other_count"], 0)
 
 
 class Exp002ScheduleTests(unittest.TestCase):
