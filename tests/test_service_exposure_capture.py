@@ -10,6 +10,11 @@ from agent_observatory.endpoint.service_exposure import (
     ListenerAttributionState,
 )
 from agent_observatory.endpoint.windows_capture import CaptureInterval, WindowsCapture
+from agent_observatory.endpoint.windows_services import (
+    ServiceProcessAttributionState,
+    WindowsServiceSnapshot,
+    service_observations_for_listeners,
+)
 from agent_observatory.evidence import (
     CollectorStatus,
     ServiceExposureCapture,
@@ -73,6 +78,39 @@ class ServiceExposureCaptureTests(unittest.TestCase):
             process_before_interval=CaptureInterval(1.0, 2.0),
             network_interval=CaptureInterval(3.0, 4.0),
             process_after_interval=CaptureInterval(5.0, 6.0),
+        )
+
+    @classmethod
+    def _verification_processes(cls):
+        return cls._windows_capture().processes_after
+
+    @staticmethod
+    def _windows_services():
+        return (
+            WindowsServiceSnapshot(
+                name="OllamaService",
+                display_name="Ollama Service",
+                state="Running",
+                start_mode="Auto",
+                process_id=10,
+                service_type="Own Process",
+            ),
+            WindowsServiceSnapshot(
+                name="ChangedPidService",
+                display_name="Changed PID Service",
+                state="Running",
+                start_mode="Manual",
+                process_id=20,
+                service_type="Own Process",
+            ),
+            WindowsServiceSnapshot(
+                name="Unrelated",
+                display_name="Unrelated",
+                state="Running",
+                start_mode="Auto",
+                process_id=9000,
+                service_type="Own Process",
+            ),
         )
 
     @staticmethod
@@ -192,19 +230,23 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                 stream_id="",
             )
 
-    def test_live_capture_uses_bracketed_listener_attribution(self) -> None:
+    def test_live_capture_uses_bracketed_listener_and_service_attribution(self) -> None:
         capture = collect_service_exposure_capture(
             windows_capture_provider=self._windows_capture,
+            windows_service_provider=self._windows_services,
+            process_verification_provider=self._verification_processes,
             docker_provider=lambda: (),
-            clock=self._clock(20.0, 30.0),
+            clock=self._clock(20.0, 30.0, 40.0),
         )
 
         self.assertFalse(capture.has_failures)
         self.assertEqual(len(capture.listeners), 2)
+        self.assertEqual(len(capture.windows_services), 2)
         self.assertEqual(capture.docker_ports, ())
         self.assertEqual(capture.listener_observed_at, 4.0)
-        self.assertEqual(capture.docker_observed_at, 20.0)
-        self.assertEqual(capture.manifest_observed_at, 30.0)
+        self.assertEqual(capture.service_observed_at, 20.0)
+        self.assertEqual(capture.docker_observed_at, 30.0)
+        self.assertEqual(capture.manifest_observed_at, 40.0)
 
         by_pid = {listener.owner_pid: listener for listener in capture.listeners}
         attributed = by_pid[10]
@@ -214,21 +256,72 @@ class ServiceExposureCaptureTests(unittest.TestCase):
         self.assertEqual(attributed.process_name, "ollama.exe")
         self.assertEqual(attributed.owner_identity_basis, "stable_process_instance")
         self.assertEqual(unresolved.attribution_state, ListenerAttributionState.UNRESOLVED)
+
+        services = {item.service.name: item for item in capture.windows_services}
         self.assertEqual(
-            unresolved.attribution_reason,
-            "owner_pid_not_stable_across_process_bracket",
+            services["OllamaService"].attribution_state,
+            ServiceProcessAttributionState.ATTRIBUTED,
+        )
+        self.assertEqual(
+            services["OllamaService"].process_ref,
+            {"pid": 10, "started_at": 5.0},
+        )
+        self.assertEqual(
+            services["ChangedPidService"].attribution_state,
+            ServiceProcessAttributionState.UNRESOLVED,
         )
 
-        windows_report = capture.collector_reports[0]
-        self.assertEqual(windows_report.status, CollectorStatus.SUCCEEDED)
-        self.assertEqual(windows_report.record_count, 2)
         self.assertEqual(
-            windows_report.observation_basis,
-            "windows_bracketed_get_nettcpconnection_snapshot",
+            tuple((report.collector, report.status, report.record_count) for report in capture.collector_reports),
+            (
+                ("windows_tcp_listeners", CollectorStatus.SUCCEEDED, 2),
+                ("windows_listener_services", CollectorStatus.SUCCEEDED, 2),
+                ("docker_published_ports", CollectorStatus.SUCCEEDED, 0),
+            ),
         )
+
+    def test_service_failure_preserves_listener_and_docker_evidence(self) -> None:
+        def fail_services():
+            raise RuntimeError("service inventory unavailable")
+
+        capture = collect_service_exposure_capture(
+            windows_capture_provider=self._windows_capture,
+            windows_service_provider=fail_services,
+            process_verification_provider=self._verification_processes,
+            docker_provider=lambda: (),
+            clock=self._clock(20.0, 30.0),
+        )
+
+        self.assertTrue(capture.has_failures)
+        self.assertEqual(len(capture.listeners), 2)
+        self.assertEqual(capture.windows_services, ())
+        self.assertEqual(capture.collector_reports[1].status, CollectorStatus.FAILED)
+        self.assertEqual(capture.collector_reports[2].status, CollectorStatus.SUCCEEDED)
+
+    def test_listener_failure_skips_service_dependency_but_docker_continues(self) -> None:
+        def fail_windows_capture():
+            raise RuntimeError("Windows capture unavailable")
+
+        def services_must_not_run():
+            raise AssertionError("service provider should not run")
+
+        capture = collect_service_exposure_capture(
+            windows_capture_provider=fail_windows_capture,
+            windows_service_provider=services_must_not_run,
+            docker_provider=lambda: (),
+            clock=self._clock(20.0, 30.0),
+        )
+
+        self.assertTrue(capture.has_failures)
+        self.assertEqual(capture.listeners, ())
+        self.assertEqual(capture.windows_services, ())
         self.assertEqual(
-            (capture.collector_reports[1].status, capture.collector_reports[1].record_count),
-            (CollectorStatus.SUCCEEDED, 0),
+            tuple(report.status for report in capture.collector_reports),
+            (
+                CollectorStatus.FAILED,
+                CollectorStatus.SKIPPED,
+                CollectorStatus.SUCCEEDED,
+            ),
         )
 
     def test_live_capture_preserves_docker_failure_in_manifest_state(self) -> None:
@@ -237,14 +330,17 @@ class ServiceExposureCaptureTests(unittest.TestCase):
 
         capture = collect_service_exposure_capture(
             windows_capture_provider=self._windows_capture,
+            windows_service_provider=self._windows_services,
+            process_verification_provider=self._verification_processes,
             docker_provider=fail_docker,
-            clock=self._clock(20.0),
+            clock=self._clock(20.0, 30.0),
         )
 
         self.assertTrue(capture.has_failures)
         self.assertEqual(len(capture.listeners), 2)
+        self.assertEqual(len(capture.windows_services), 2)
         self.assertEqual(capture.docker_ports, ())
-        docker_report = capture.collector_reports[1]
+        docker_report = capture.collector_reports[2]
         self.assertEqual(docker_report.status, CollectorStatus.FAILED)
         self.assertIsNone(docker_report.record_count)
         self.assertEqual(docker_report.error_type, "RuntimeError")
@@ -257,12 +353,14 @@ class ServiceExposureCaptureTests(unittest.TestCase):
         capture = collect_service_exposure_capture(
             include_docker=False,
             windows_capture_provider=self._windows_capture,
+            windows_service_provider=self._windows_services,
+            process_verification_provider=self._verification_processes,
             docker_provider=docker_must_not_run,
-            clock=self._clock(20.0),
+            clock=self._clock(20.0, 30.0),
         )
 
         self.assertFalse(capture.has_failures)
-        report = capture.collector_reports[1]
+        report = capture.collector_reports[2]
         self.assertEqual(report.status, CollectorStatus.SKIPPED)
         self.assertIsNone(report.record_count)
         self.assertIsNone(capture.docker_observed_at)
@@ -280,6 +378,11 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                     status=CollectorStatus.SUCCEEDED,
                     record_count=0,
                     observation_basis="windows_bracketed_get_nettcpconnection_snapshot",
+                ),
+                ServiceExposureCollectorReport(
+                    collector="windows_listener_services",
+                    status=CollectorStatus.SKIPPED,
+                    record_count=None,
                 ),
                 ServiceExposureCollectorReport(
                     collector="docker_published_ports",
@@ -301,16 +404,39 @@ class ServiceExposureCaptureTests(unittest.TestCase):
         self.assertFalse(batch[0].payload["partial"])
         self.assertEqual(
             [item["record_count"] for item in batch[0].payload["collectors"]],
-            [0, 0],
+            [0, None, 0],
         )
 
-    def test_append_live_capture_persists_facts_and_manifest_atomically(self) -> None:
+    def test_append_live_capture_persists_listener_service_docker_and_manifest_atomically(self) -> None:
+        listener = HostTcpListener(
+            owner_pid=10,
+            local_address="0.0.0.0",
+            local_port=11434,
+            owner_identity_basis="stable_process_instance",
+            attribution_state=ListenerAttributionState.ATTRIBUTED,
+            process_started_at=5.0,
+            process_name="ollama.exe",
+            executable_path=r"C:\Apps\ollama.exe",
+            attribution_reason=None,
+        )
+        service = WindowsServiceSnapshot(
+            name="OllamaService",
+            display_name="Ollama Service",
+            state="Running",
+            start_mode="Auto",
+            process_id=10,
+            service_type="Own Process",
+        )
+        service_observation = service_observations_for_listeners(
+            (service,),
+            (listener,),
+        )[0]
         capture = ServiceExposureCapture(
-            listeners=(HostTcpListener(10, "0.0.0.0", 11434),),
+            listeners=(listener,),
             docker_ports=(self._docker_ports()[1],),
             listener_observed_at=10.0,
-            docker_observed_at=20.0,
-            manifest_observed_at=30.0,
+            docker_observed_at=30.0,
+            manifest_observed_at=40.0,
             collector_reports=(
                 ServiceExposureCollectorReport(
                     collector="windows_tcp_listeners",
@@ -319,12 +445,23 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                     observation_basis="windows_bracketed_get_nettcpconnection_snapshot",
                 ),
                 ServiceExposureCollectorReport(
+                    collector="windows_listener_services",
+                    status=CollectorStatus.SUCCEEDED,
+                    record_count=1,
+                    observation_basis=(
+                        "windows_cim_win32_service_running_snapshot; "
+                        "process_verified_after_service_inventory"
+                    ),
+                ),
+                ServiceExposureCollectorReport(
                     collector="docker_published_ports",
                     status=CollectorStatus.SUCCEEDED,
                     record_count=1,
                     observation_basis="docker_inspect_running_container",
                 ),
             ),
+            windows_services=(service_observation,),
+            service_observed_at=20.0,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -341,11 +478,12 @@ class ServiceExposureCaptureTests(unittest.TestCase):
             tuple(event.event_type for event in stored),
             (
                 EventType.TCP_LISTENER_OBSERVED,
+                EventType.WINDOWS_SERVICE_OBSERVED,
                 EventType.DOCKER_PORT_PUBLISHED,
                 EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
             ),
         )
-        self.assertEqual(tuple(event.event_id for event in loaded), (1, 2, 3))
+        self.assertEqual(tuple(event.event_id for event in loaded), (1, 2, 3, 4))
         self.assertEqual(loaded[-1].payload["capture_kind"], "service_exposure")
 
     def test_failed_collector_cannot_claim_zero_records(self) -> None:
