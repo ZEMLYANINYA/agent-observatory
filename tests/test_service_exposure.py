@@ -1,16 +1,31 @@
 import unittest
 
+from agent_observatory.endpoint.models import ProcessSnapshot
 from agent_observatory.endpoint.network import TcpConnection
 from agent_observatory.endpoint.service_exposure import (
     BindScope,
     DockerPublishedPort,
     HostTcpListener,
+    ListenerAttributionState,
     classify_bind_scope,
     listeners_from_tcp_connections,
+    listeners_from_windows_capture,
 )
+from agent_observatory.endpoint.windows_capture import CaptureInterval, WindowsCapture
 
 
 class ServiceExposureModelTests(unittest.TestCase):
+    @staticmethod
+    def _capture(before, connections, after):
+        return WindowsCapture(
+            processes_before=tuple(before),
+            tcp_connections=tuple(connections),
+            processes_after=tuple(after),
+            process_before_interval=CaptureInterval(1.0, 2.0),
+            network_interval=CaptureInterval(3.0, 4.0),
+            process_after_interval=CaptureInterval(5.0, 6.0),
+        )
+
     def test_bind_scope_classifies_wildcard_addresses(self) -> None:
         for address in ("0.0.0.0", "::", "::0", "*"):
             with self.subTest(address=address):
@@ -43,6 +58,65 @@ class ServiceExposureModelTests(unittest.TestCase):
         self.assertEqual(listeners[0].bind_scope, BindScope.WILDCARD)
         self.assertEqual(listeners[1].bind_scope, BindScope.LOOPBACK)
         self.assertTrue(all(item.owner_identity_basis == "pid_only_snapshot" for item in listeners))
+        self.assertTrue(
+            all(item.attribution_state is ListenerAttributionState.UNRESOLVED for item in listeners)
+        )
+
+    def test_bracketed_listener_attribution_uses_stable_process_instance(self) -> None:
+        process = ProcessSnapshot(
+            pid=42,
+            ppid=4,
+            name="service.exe",
+            started_at=100.0,
+            command_line="service.exe --serve",
+            executable_path=r"C:\Program Files\Service\service.exe",
+        )
+        capture = self._capture(
+            (process,),
+            (TcpConnection(42, "Listen", "0.0.0.0", 8080, "0.0.0.0", 0),),
+            (process,),
+        )
+
+        listener = listeners_from_windows_capture(capture)[0]
+
+        self.assertEqual(listener.attribution_state, ListenerAttributionState.ATTRIBUTED)
+        self.assertEqual(listener.owner_identity_basis, "stable_process_instance")
+        self.assertEqual(listener.process_ref, {"pid": 42, "started_at": 100.0})
+        self.assertEqual(listener.process_name, "service.exe")
+        self.assertEqual(listener.executable_path, r"C:\Program Files\Service\service.exe")
+        self.assertIsNone(listener.attribution_reason)
+
+    def test_bracketed_listener_attribution_rejects_pid_reuse(self) -> None:
+        before = ProcessSnapshot(42, 4, "old.exe", 100.0, "old", r"C:\old.exe")
+        after = ProcessSnapshot(42, 4, "new.exe", 200.0, "new", r"C:\new.exe")
+        capture = self._capture(
+            (before,),
+            (TcpConnection(42, "Listen", "0.0.0.0", 8080, "0.0.0.0", 0),),
+            (after,),
+        )
+
+        listener = listeners_from_windows_capture(capture)[0]
+
+        self.assertEqual(listener.attribution_state, ListenerAttributionState.UNRESOLVED)
+        self.assertEqual(listener.owner_identity_basis, "pid_only_snapshot")
+        self.assertIsNone(listener.process_ref)
+        self.assertEqual(
+            listener.attribution_reason,
+            "owner_pid_not_stable_across_process_bracket",
+        )
+
+    def test_bracketed_listener_attribution_rejects_path_change(self) -> None:
+        before = ProcessSnapshot(42, 4, "svc.exe", 100.0, "svc", r"C:\one\svc.exe")
+        after = ProcessSnapshot(42, 4, "svc.exe", 100.0, "svc", r"C:\two\svc.exe")
+        capture = self._capture(
+            (before,),
+            (TcpConnection(42, "Listen", "127.0.0.1", 6379, "0.0.0.0", 0),),
+            (after,),
+        )
+
+        listener = listeners_from_windows_capture(capture)[0]
+        self.assertEqual(listener.attribution_state, ListenerAttributionState.UNRESOLVED)
+        self.assertIsNone(listener.process_ref)
 
     def test_listener_rejects_invalid_port(self) -> None:
         with self.assertRaises(ValueError):
