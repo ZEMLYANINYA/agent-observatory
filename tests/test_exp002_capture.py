@@ -8,6 +8,7 @@ from agent_observatory.endpoint.identity import (
 from tools.exp002_capture import (
     _file_identity_payload,
     _hash_observation_payload,
+    _next_schedule_slot,
 )
 
 
@@ -57,6 +58,41 @@ class Exp002EvidenceSerializationTests(unittest.TestCase):
         self.assertEqual(payload["state"], "missing-path")
         self.assertIsNone(payload["observed_at"])
         self.assertIsNone(payload["hash_gap_ms"])
+
+
+class Exp002ScheduleTests(unittest.TestCase):
+    def test_next_slot_keeps_future_grid_point(self) -> None:
+        self.assertEqual(
+            _next_schedule_slot(
+                origin_ns=0,
+                interval_ns=1_000,
+                completed_slot=0,
+                now_ns=500,
+            ),
+            1,
+        )
+
+    def test_next_slot_skips_missed_slot_without_extra_interval(self) -> None:
+        self.assertEqual(
+            _next_schedule_slot(
+                origin_ns=0,
+                interval_ns=1_000,
+                completed_slot=0,
+                now_ns=1_400,
+            ),
+            2,
+        )
+
+    def test_next_slot_allows_current_grid_point(self) -> None:
+        self.assertEqual(
+            _next_schedule_slot(
+                origin_ns=0,
+                interval_ns=1_000,
+                completed_slot=0,
+                now_ns=2_000,
+            ),
+            2,
+        )
 
 
 if __name__ == "__main__":
