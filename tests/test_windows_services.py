@@ -2,20 +2,52 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from agent_observatory.endpoint.models import ProcessSnapshot
 from agent_observatory.endpoint.service_exposure import (
     HostTcpListener,
     ListenerAttributionState,
 )
+from agent_observatory.endpoint.windows_capture import CaptureInterval, WindowsCapture
 from agent_observatory.endpoint.windows_services import (
     ServiceProcessAttributionState,
     parse_windows_service_inventory,
     service_observations_for_listeners,
+    service_processes_stable_across_inventory,
 )
 from agent_observatory.evidence import windows_service_event
 from agent_observatory.storage import EventStore, EventType
 
 
 class WindowsServiceInventoryTests(unittest.TestCase):
+    @staticmethod
+    def _process(
+        *,
+        pid: int = 3000,
+        started_at: float = 100.5,
+        name: str = "svchost.exe",
+        path: str = r"C:\Windows\System32\svchost.exe",
+        command_line: str = "svchost.exe -k Example",
+    ) -> ProcessSnapshot:
+        return ProcessSnapshot(
+            pid=pid,
+            ppid=1,
+            name=name,
+            started_at=started_at,
+            command_line=command_line,
+            executable_path=path,
+        )
+
+    @classmethod
+    def _capture_with_process(cls, process: ProcessSnapshot) -> WindowsCapture:
+        return WindowsCapture(
+            processes_before=(process,),
+            tcp_connections=(),
+            processes_after=(process,),
+            process_before_interval=CaptureInterval(1.0, 2.0),
+            network_interval=CaptureInterval(3.0, 4.0),
+            process_after_interval=CaptureInterval(5.0, 6.0),
+        )
+
     def test_empty_inventory(self) -> None:
         self.assertEqual(parse_windows_service_inventory(""), ())
 
@@ -97,6 +129,63 @@ class WindowsServiceInventoryTests(unittest.TestCase):
                 item.process_ref == {"pid": 3000, "started_at": 100.5}
                 for item in observations
             )
+        )
+
+    def test_service_process_verification_keeps_same_instance(self) -> None:
+        process = self._process()
+        capture = self._capture_with_process(process)
+
+        stable = service_processes_stable_across_inventory(capture, (process,))
+
+        self.assertEqual(stable, (process,))
+
+    def test_post_service_pid_reuse_downgrades_attribution(self) -> None:
+        services = parse_windows_service_inventory(
+            r'''
+            {
+              "name": "ExampleSvc",
+              "display_name": "Example Service",
+              "state": "Running",
+              "start_mode": "Auto",
+              "process_id": 3000,
+              "service_type": "Share Process"
+            }
+            '''
+        )
+        listener = HostTcpListener(
+            owner_pid=3000,
+            local_address="0.0.0.0",
+            local_port=5000,
+            owner_identity_basis="stable_process_instance",
+            attribution_state=ListenerAttributionState.ATTRIBUTED,
+            process_started_at=100.5,
+            process_name="svchost.exe",
+            executable_path=r"C:\Windows\System32\svchost.exe",
+            attribution_reason=None,
+        )
+        reused = self._process(
+            started_at=101.0,
+            name="other.exe",
+            path=r"C:\Temp\other.exe",
+            command_line="other.exe",
+        )
+
+        observations = service_observations_for_listeners(
+            services,
+            (listener,),
+            verified_processes=(reused,),
+        )
+
+        self.assertEqual(len(observations), 1)
+        observation = observations[0]
+        self.assertEqual(
+            observation.attribution_state,
+            ServiceProcessAttributionState.UNRESOLVED,
+        )
+        self.assertIsNone(observation.process_ref)
+        self.assertEqual(
+            observation.attribution_reason,
+            "service_process_not_stable_across_post_service_snapshot",
         )
 
     def test_unresolved_listener_does_not_upgrade_pid_to_process_identity(self) -> None:
