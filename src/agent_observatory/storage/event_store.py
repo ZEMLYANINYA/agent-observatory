@@ -4,8 +4,9 @@ import json
 import math
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from .models import EventType, ObservationEvent, StoredEvent
 
@@ -42,7 +43,10 @@ class EventStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Yield a transactional connection and always close its OS handle."""
+
         connection = sqlite3.connect(
             self.path,
             timeout=max(self.busy_timeout_ms / 1000, 0.001),
@@ -51,7 +55,12 @@ class EventStore:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
         connection.execute("PRAGMA synchronous = NORMAL")
-        return connection
+
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:
