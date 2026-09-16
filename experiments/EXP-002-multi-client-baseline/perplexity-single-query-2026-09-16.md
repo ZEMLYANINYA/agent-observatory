@@ -6,7 +6,41 @@ Controlled single-query transition suitable for EXP-002 comparison.
 
 This run followed an earlier Perplexity multi-turn/UI-completion ambiguity case. In this run, the operator sent one query only and no second follow-up query was required.
 
-## Artifact
+## Baseline state captures
+
+A first STARTUP attempt returned:
+
+```text
+Capture failed: application 'Perplexity' matched multiple roots; capture separately
+```
+
+A repeated STARTUP capture a few seconds later succeeded:
+
+```text
+Artifact: .local/exp002/20260916T193137Z-perplexity-startup.json
+processes=10
+tcp=11
+unknown=2
+non_hashed=0
+guard_rejected=0
+```
+
+The subsequent IDLE capture succeeded:
+
+```text
+Artifact: .local/exp002/20260916T193259Z-perplexity-idle.json
+processes=10
+tcp=9
+unknown=2
+non_hashed=0
+guard_rejected=0
+```
+
+The transient multiple-root result is retained as launch-time discovery ambiguity rather than discarded. The current discovery logic can emit more than one root candidate when multiple profile-matching processes are present and their reported parents do not match the same application profile in that snapshot. The successful repeated STARTUP capture shows that the ambiguity was temporary for this launch sequence.
+
+No claim is made here about which specific process relationship caused the temporary ambiguity without preserving the candidate root PIDs from that failed attempt.
+
+## Transition artifact
 
 ```text
 .local/exp002/20260916T192800Z-perplexity-transition-query.json
