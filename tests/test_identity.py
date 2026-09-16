@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent_observatory.endpoint.identity import (
     ExecutableHashState,
+    FileIdentity,
     build_process_identities,
     capture_identity_key,
     hash_command_line,
@@ -84,12 +85,16 @@ class ProcessIdentityTests(unittest.TestCase):
                 hashlib.sha256(payload).hexdigest(),
             )
 
-    def test_executable_hash_is_cached_by_normalized_path(self) -> None:
+    def test_executable_hash_is_cached_by_file_identity_not_path(self) -> None:
         calls: list[str] = []
+        identity = FileIdentity(volume_serial=7, file_id=11)
 
         def fake_hasher(path: str) -> str:
             calls.append(path)
             return "a" * 64
+
+        def fake_identity(path: str) -> FileIdentity:
+            return identity
 
         processes = (
             ProcessSnapshot(
@@ -111,20 +116,133 @@ class ProcessIdentityTests(unittest.TestCase):
         identities = build_process_identities(
             processes,
             file_hasher=fake_hasher,
+            file_identity_provider=fake_identity,
         )
 
         self.assertEqual(len(calls), 1)
-        self.assertEqual(
-            identities[0].executable.sha256,
-            "a" * 64,
-        )
-        self.assertEqual(
-            identities[1].executable.sha256,
-            "a" * 64,
-        )
+        self.assertEqual(identities[0].executable.file_identity, identity)
+        self.assertEqual(identities[1].executable.file_identity, identity)
+        self.assertEqual(identities[0].executable.sha256, "a" * 64)
+        self.assertEqual(identities[1].executable.sha256, "a" * 64)
         self.assertEqual(
             identities[0].executable.hash_state,
             ExecutableHashState.HASHED,
+        )
+
+    def test_same_path_replacement_is_not_reused_from_cache(self) -> None:
+        calls: list[str] = []
+        identities_seen = iter(
+            [
+                FileIdentity(1, 100),
+                FileIdentity(1, 100),
+                FileIdentity(1, 200),
+                FileIdentity(1, 200),
+            ]
+        )
+
+        def fake_hasher(path: str) -> str:
+            calls.append(path)
+            return ("a" if len(calls) == 1 else "b") * 64
+
+        def fake_identity(path: str) -> FileIdentity:
+            return next(identities_seen)
+
+        processes = (
+            ProcessSnapshot(
+                pid=100,
+                ppid=10,
+                name="Claude.exe",
+                started_at=100.0,
+                executable_path="C:\\Apps\\Claude.exe",
+            ),
+            ProcessSnapshot(
+                pid=101,
+                ppid=10,
+                name="Claude.exe",
+                started_at=101.0,
+                executable_path="C:\\Apps\\Claude.exe",
+            ),
+        )
+
+        result = build_process_identities(
+            processes,
+            file_hasher=fake_hasher,
+            file_identity_provider=fake_identity,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result[0].executable.sha256, "a" * 64)
+        self.assertEqual(result[1].executable.sha256, "b" * 64)
+        self.assertNotEqual(
+            result[0].executable.file_identity,
+            result[1].executable.file_identity,
+        )
+
+    def test_replacement_during_hash_discards_digest(self) -> None:
+        identities_seen = iter(
+            [
+                FileIdentity(1, 100),
+                FileIdentity(1, 200),
+            ]
+        )
+
+        def fake_identity(path: str) -> FileIdentity:
+            return next(identities_seen)
+
+        process = ProcessSnapshot(
+            pid=100,
+            ppid=10,
+            name="Claude.exe",
+            started_at=100.0,
+            executable_path="C:\\Apps\\Claude.exe",
+        )
+
+        result = build_process_identities(
+            (process,),
+            file_hasher=lambda _: "a" * 64,
+            file_identity_provider=fake_identity,
+        )
+
+        self.assertEqual(
+            result[0].executable.hash_state,
+            ExecutableHashState.FILE_REPLACED_DURING_HASH,
+        )
+        self.assertIsNone(result[0].executable.sha256)
+        self.assertEqual(
+            result[0].executable.file_identity,
+            FileIdentity(1, 200),
+        )
+
+    def test_hash_gap_is_explicit(self) -> None:
+        ticks = iter([105.25, 105.50])
+        identity = FileIdentity(1, 100)
+        process = ProcessSnapshot(
+            pid=100,
+            ppid=10,
+            name="Claude.exe",
+            started_at=100.0,
+            executable_path="C:\\Apps\\Claude.exe",
+        )
+
+        result = build_process_identities(
+            (process,),
+            file_hasher=lambda _: "a" * 64,
+            file_identity_provider=lambda _: identity,
+            process_observed_at=105.0,
+            clock=lambda: next(ticks),
+        )
+
+        self.assertEqual(
+            result[0].executable.hash_state,
+            ExecutableHashState.HASHED,
+        )
+        self.assertAlmostEqual(
+            result[0].executable.hash_observation.hash_gap_ms,
+            250.0,
+        )
+        self.assertEqual(
+            result[0].executable.hash_observation.observed_at,
+            105.50,
         )
 
     def test_missing_executable_path_is_explicit(self) -> None:
