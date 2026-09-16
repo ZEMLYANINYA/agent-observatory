@@ -47,6 +47,9 @@ def capture_into_store(
     hash_executables: bool = True,
     capture_provider: Callable[[], WindowsCapture] = collect_windows_capture,
 ) -> tuple[StoredEvent, ...]:
+    if store.stream_exists(stream_id):
+        raise ValueError(f"stream already exists: {stream_id}")
+
     capture = capture_provider()
     return append_windows_capture(
         store,
