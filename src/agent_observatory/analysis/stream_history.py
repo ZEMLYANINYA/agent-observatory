@@ -132,7 +132,10 @@ def _semantic_payload(event: StoredEvent) -> dict[str, object]:
 
 def _canonical_fact(event: StoredEvent) -> str:
     return json.dumps(
-        _semantic_payload(event),
+        {
+            "event_version": event.event_version,
+            "payload": _semantic_payload(event),
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
