@@ -16,6 +16,7 @@ _META_TABLE = "event_store_meta"
 _EVENTS_TABLE = "events"
 _UPDATE_TRIGGER = "events_reject_update"
 _DELETE_TRIGGER = "events_reject_delete"
+_REPLACE_TRIGGER = "events_reject_replace"
 
 
 class EventStoreSchemaError(RuntimeError):
@@ -124,6 +125,18 @@ class EventStore:
                 END
                 """
             )
+            connection.execute(
+                f"""
+                CREATE TRIGGER {_REPLACE_TRIGGER}
+                BEFORE INSERT ON events
+                WHEN EXISTS (
+                    SELECT 1 FROM events WHERE event_id = NEW.event_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'events table is append-only');
+                END
+                """
+            )
 
     def _validate_existing_schema(self, connection: sqlite3.Connection) -> None:
         version_row = connection.execute(
@@ -150,10 +163,16 @@ class EventStore:
             (_EVENTS_TABLE, "table"),
             (_UPDATE_TRIGGER, "trigger"),
             (_DELETE_TRIGGER, "trigger"),
+            (_REPLACE_TRIGGER, "trigger"),
         }
         rows = connection.execute(
-            "SELECT name, type FROM sqlite_master WHERE name IN (?, ?, ?)",
-            (_EVENTS_TABLE, _UPDATE_TRIGGER, _DELETE_TRIGGER),
+            "SELECT name, type FROM sqlite_master WHERE name IN (?, ?, ?, ?)",
+            (
+                _EVENTS_TABLE,
+                _UPDATE_TRIGGER,
+                _DELETE_TRIGGER,
+                _REPLACE_TRIGGER,
+            ),
         ).fetchall()
         observed_objects = {(row["name"], row["type"]) for row in rows}
         missing = required_objects - observed_objects
