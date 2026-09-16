@@ -5,6 +5,7 @@ from pathlib import Path
 from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
     HostTcpListener,
+    ListenerAttributionState,
 )
 from agent_observatory.evidence import (
     docker_published_port_event,
@@ -33,11 +34,50 @@ class ServiceExposureEventTests(unittest.TestCase):
         self.assertEqual(event.payload["protocol"], "tcp")
         self.assertEqual(event.payload["owner_pid"], 1234)
         self.assertEqual(event.payload["owner_identity_basis"], "pid_only_snapshot")
+        self.assertEqual(event.payload["attribution_state"], "unresolved")
+        self.assertEqual(
+            event.payload["attribution_reason"],
+            "process_instance_not_bracket_validated",
+        )
+        self.assertIsNone(event.payload["process"])
+        self.assertIsNone(event.payload["process_name"])
+        self.assertIsNone(event.payload["executable_path"])
         self.assertEqual(event.payload["bind_scope"], "wildcard")
         self.assertEqual(event.payload["observation_basis"], "windows_get_nettcpconnection_snapshot")
-        self.assertNotIn("process", event.payload)
         self.assertNotIn("reachable", event.payload)
         self.assertNotIn("exploitable", event.payload)
+
+    def test_tcp_listener_event_preserves_bracketed_process_identity(self) -> None:
+        listener = HostTcpListener(
+            owner_pid=4321,
+            local_address="127.0.0.1",
+            local_port=8000,
+            owner_identity_basis="stable_process_instance",
+            attribution_state=ListenerAttributionState.ATTRIBUTED,
+            process_started_at=123.5,
+            process_name="service.exe",
+            executable_path=r"C:\Service\service.exe",
+            attribution_reason=None,
+        )
+
+        event = tcp_listener_event(
+            listener,
+            observed_at=20.0,
+            source="service-exposure-test",
+            stream_id="exposure:2",
+            observation_basis="windows_bracketed_process_tcp_capture",
+        )
+
+        self.assertEqual(event.payload["attribution_state"], "attributed")
+        self.assertEqual(event.payload["owner_identity_basis"], "stable_process_instance")
+        self.assertEqual(event.payload["process"], {"pid": 4321, "started_at": 123.5})
+        self.assertEqual(event.payload["process_name"], "service.exe")
+        self.assertEqual(event.payload["executable_path"], r"C:\Service\service.exe")
+        self.assertIsNone(event.payload["attribution_reason"])
+        self.assertEqual(
+            event.payload["observation_basis"],
+            "windows_bracketed_process_tcp_capture",
+        )
 
     def test_docker_published_port_event_preserves_mapping_without_verdict(self) -> None:
         published = DockerPublishedPort(
