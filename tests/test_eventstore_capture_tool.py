@@ -8,10 +8,11 @@ from unittest.mock import patch
 from agent_observatory.endpoint.models import ProcessSnapshot
 from agent_observatory.endpoint.network import TcpConnection
 from agent_observatory.endpoint.windows_capture import CaptureInterval, WindowsCapture
-from agent_observatory.storage import EventStore, EventType
+from agent_observatory.storage import EventStore, EventType, StoredEvent
 from tools.eventstore_capture import (
     _application_names,
     _print_summary,
+    _print_timeline,
     _stream_id,
     capture_into_store,
     main,
@@ -127,6 +128,43 @@ class EventStoreCaptureToolTests(unittest.TestCase):
         self.assertIn("PROCESS_OBSERVED", text)
         self.assertIn("TCP_CONNECTION_OBSERVED", text)
 
+    def test_timeline_sorts_by_observed_at_not_event_id(self) -> None:
+        later_appended_first = StoredEvent(
+            event_id=1,
+            event_type=EventType.APPLICATION_DISCOVERY_OBSERVED,
+            event_version=1,
+            observed_at=20.0,
+            recorded_at=30.0,
+            source="tool-test",
+            stream_id="timeline-001",
+            payload={
+                "application": "Gemini",
+                "outcome": "unique",
+            },
+        )
+        earlier_appended_second = StoredEvent(
+            event_id=2,
+            event_type=EventType.PROCESS_OBSERVED,
+            event_version=1,
+            observed_at=10.0,
+            recorded_at=31.0,
+            source="tool-test",
+            stream_id="timeline-001",
+            payload={"pid": 100},
+        )
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            _print_timeline((later_appended_first, earlier_appended_second))
+
+        text = output.getvalue()
+        self.assertIn("OBSERVED TIMELINE:", text)
+        self.assertIn("event_id is append order", text)
+        self.assertLess(
+            text.index("PROCESS_OBSERVED"),
+            text.index("APPLICATION_DISCOVERY_OBSERVED"),
+        )
+
     def test_main_persists_and_reads_back_one_capture(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "events.sqlite3"
@@ -169,7 +207,7 @@ class EventStoreCaptureToolTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertTrue(persisted)
-        self.assertIn("TIMELINE:", output.getvalue())
+        self.assertIn("OBSERVED TIMELINE:", output.getvalue())
         self.assertIn("Gemini: unique candidates=1", output.getvalue())
 
 
