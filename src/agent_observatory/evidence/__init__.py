@@ -30,6 +30,8 @@ from .windows_capture_events import (
     windows_capture_event_batch,
 )
 from .windows_firewall_events import (
+    append_windows_firewall_context,
+    windows_firewall_context_event_batch,
     windows_firewall_profile_event,
     windows_network_profile_event,
 )
@@ -43,6 +45,7 @@ __all__ = [
     "append_service_exposure_batch",
     "append_service_exposure_capture",
     "append_windows_capture",
+    "append_windows_firewall_context",
     "collect_service_exposure_capture",
     "docker_published_port_event",
     "executable_evidence_events",
@@ -57,6 +60,7 @@ __all__ = [
     "tcp_connection_event",
     "tcp_listener_event",
     "windows_capture_event_batch",
+    "windows_firewall_context_event_batch",
     "windows_firewall_profile_event",
     "windows_network_profile_event",
     "windows_service_event",
