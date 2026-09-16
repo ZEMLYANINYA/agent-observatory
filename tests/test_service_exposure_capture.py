@@ -3,9 +3,18 @@ import unittest
 from pathlib import Path
 
 from agent_observatory.endpoint.network import TcpConnection
-from agent_observatory.endpoint.service_exposure import DockerPublishedPort
+from agent_observatory.endpoint.service_exposure import (
+    DockerPublishedPort,
+    HostTcpListener,
+)
 from agent_observatory.evidence import (
+    CollectorStatus,
+    ServiceExposureCapture,
+    ServiceExposureCollectorReport,
     append_service_exposure_batch,
+    append_service_exposure_capture,
+    collect_service_exposure_capture,
+    service_exposure_capture_event_batch,
     service_exposure_event_batch,
 )
 from agent_observatory.storage import EventStore, EventType
@@ -42,6 +51,11 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                 host_port=8000,
             ),
         )
+
+    @staticmethod
+    def _clock(*values):
+        iterator = iter(values)
+        return lambda: next(iterator)
 
     def test_batch_filters_connections_and_preserves_separate_time_anchors(self) -> None:
         batch = service_exposure_event_batch(
@@ -130,6 +144,154 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                 docker_observed_at=2.0,
                 source="service-exposure-test",
                 stream_id="",
+            )
+
+    def test_live_capture_success_distinguishes_zero_docker_publications(self) -> None:
+        capture = collect_service_exposure_capture(
+            tcp_provider=self._tcp_connections,
+            docker_provider=lambda: (),
+            clock=self._clock(10.0, 20.0, 30.0),
+        )
+
+        self.assertFalse(capture.has_failures)
+        self.assertEqual(len(capture.listeners), 2)
+        self.assertEqual(capture.docker_ports, ())
+        self.assertEqual(capture.listener_observed_at, 10.0)
+        self.assertEqual(capture.docker_observed_at, 20.0)
+        self.assertEqual(capture.manifest_observed_at, 30.0)
+        self.assertEqual(
+            tuple((item.collector, item.status, item.record_count) for item in capture.collector_reports),
+            (
+                ("windows_tcp_listeners", CollectorStatus.SUCCEEDED, 2),
+                ("docker_published_ports", CollectorStatus.SUCCEEDED, 0),
+            ),
+        )
+
+    def test_live_capture_preserves_docker_failure_in_manifest_state(self) -> None:
+        def fail_docker():
+            raise RuntimeError("docker daemon unavailable")
+
+        capture = collect_service_exposure_capture(
+            tcp_provider=self._tcp_connections,
+            docker_provider=fail_docker,
+            clock=self._clock(10.0, 20.0),
+        )
+
+        self.assertTrue(capture.has_failures)
+        self.assertEqual(len(capture.listeners), 2)
+        self.assertEqual(capture.docker_ports, ())
+        docker_report = capture.collector_reports[1]
+        self.assertEqual(docker_report.status, CollectorStatus.FAILED)
+        self.assertIsNone(docker_report.record_count)
+        self.assertEqual(docker_report.error_type, "RuntimeError")
+        self.assertEqual(docker_report.error_message, "docker daemon unavailable")
+
+    def test_live_capture_explicit_docker_skip_is_not_failure(self) -> None:
+        def docker_must_not_run():
+            raise AssertionError("docker provider should not run")
+
+        capture = collect_service_exposure_capture(
+            include_docker=False,
+            tcp_provider=self._tcp_connections,
+            docker_provider=docker_must_not_run,
+            clock=self._clock(10.0, 20.0),
+        )
+
+        self.assertFalse(capture.has_failures)
+        report = capture.collector_reports[1]
+        self.assertEqual(report.status, CollectorStatus.SKIPPED)
+        self.assertIsNone(report.record_count)
+        self.assertIsNone(capture.docker_observed_at)
+
+    def test_zero_record_live_capture_still_emits_one_manifest(self) -> None:
+        capture = ServiceExposureCapture(
+            listeners=(),
+            docker_ports=(),
+            listener_observed_at=10.0,
+            docker_observed_at=20.0,
+            manifest_observed_at=30.0,
+            collector_reports=(
+                ServiceExposureCollectorReport(
+                    collector="windows_tcp_listeners",
+                    status=CollectorStatus.SUCCEEDED,
+                    record_count=0,
+                    observation_basis="windows_get_nettcpconnection_snapshot",
+                ),
+                ServiceExposureCollectorReport(
+                    collector="docker_published_ports",
+                    status=CollectorStatus.SUCCEEDED,
+                    record_count=0,
+                    observation_basis="docker_inspect_running_container",
+                ),
+            ),
+        )
+
+        batch = service_exposure_capture_event_batch(
+            capture,
+            source="service-exposure-test",
+            stream_id="exposure:zero",
+        )
+
+        self.assertEqual(len(batch), 1)
+        self.assertEqual(batch[0].event_type, EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST)
+        self.assertFalse(batch[0].payload["partial"])
+        self.assertEqual(
+            [item["record_count"] for item in batch[0].payload["collectors"]],
+            [0, 0],
+        )
+
+    def test_append_live_capture_persists_facts_and_manifest_atomically(self) -> None:
+        capture = ServiceExposureCapture(
+            listeners=(HostTcpListener(10, "0.0.0.0", 11434),),
+            docker_ports=(self._docker_ports()[1],),
+            listener_observed_at=10.0,
+            docker_observed_at=20.0,
+            manifest_observed_at=30.0,
+            collector_reports=(
+                ServiceExposureCollectorReport(
+                    collector="windows_tcp_listeners",
+                    status=CollectorStatus.SUCCEEDED,
+                    record_count=1,
+                    observation_basis="windows_get_nettcpconnection_snapshot",
+                ),
+                ServiceExposureCollectorReport(
+                    collector="docker_published_ports",
+                    status=CollectorStatus.SUCCEEDED,
+                    record_count=1,
+                    observation_basis="docker_inspect_running_container",
+                ),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = EventStore(Path(temp_dir) / "events.sqlite3")
+            stored = append_service_exposure_capture(
+                store,
+                capture,
+                source="service-exposure-test",
+                stream_id="exposure:live",
+            )
+            loaded = store.read_events(stream_id="exposure:live")
+
+        self.assertEqual(
+            tuple(event.event_type for event in stored),
+            (
+                EventType.TCP_LISTENER_OBSERVED,
+                EventType.DOCKER_PORT_PUBLISHED,
+                EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
+            ),
+        )
+        self.assertEqual(tuple(event.event_id for event in loaded), (1, 2, 3))
+        self.assertEqual(loaded[-1].payload["capture_kind"], "service_exposure")
+
+    def test_failed_collector_cannot_claim_zero_records(self) -> None:
+        with self.assertRaises(ValueError):
+            ServiceExposureCollectorReport(
+                collector="docker_published_ports",
+                status=CollectorStatus.FAILED,
+                record_count=0,
+                error_type="RuntimeError",
+                error_message="failed",
             )
 
 
