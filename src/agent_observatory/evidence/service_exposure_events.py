@@ -4,6 +4,7 @@ from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
     HostTcpListener,
 )
+from agent_observatory.endpoint.windows_services import WindowsServiceProcessObservation
 from agent_observatory.storage import EventType, ObservationEvent
 
 
@@ -38,6 +39,43 @@ def tcp_listener_event(
             "local_address": listener.local_address,
             "local_port": listener.local_port,
             "bind_scope": listener.bind_scope.value,
+            "observation_basis": observation_basis,
+        },
+    )
+
+
+def windows_service_event(
+    observation: WindowsServiceProcessObservation,
+    *,
+    observed_at: float,
+    source: str,
+    stream_id: str | None = None,
+    observation_basis: str = "windows_cim_win32_service_running_snapshot",
+) -> ObservationEvent:
+    """Persist one running Win32_Service fact without inventing service ownership."""
+
+    if not isinstance(observation_basis, str) or not observation_basis.strip():
+        raise ValueError("observation_basis must be a non-empty string")
+
+    service = observation.service
+    return ObservationEvent(
+        event_type=EventType.WINDOWS_SERVICE_OBSERVED,
+        observed_at=observed_at,
+        source=source,
+        stream_id=stream_id,
+        payload={
+            "service_name": service.name,
+            "display_name": service.display_name,
+            "state": service.state,
+            "start_mode": service.start_mode,
+            "service_type": service.service_type,
+            "process_id": service.process_id,
+            "process": observation.process_ref,
+            "process_name": observation.process_name,
+            "executable_path": observation.executable_path,
+            "process_attribution_state": observation.attribution_state.value,
+            "process_attribution_basis": observation.attribution_basis,
+            "process_attribution_reason": observation.attribution_reason,
             "observation_basis": observation_basis,
         },
     )
