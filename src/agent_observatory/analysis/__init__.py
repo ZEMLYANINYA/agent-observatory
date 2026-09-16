@@ -31,6 +31,11 @@ from .pass_framework import (
     node_evidence_ref,
     run_analysis_passes,
 )
+from .passes import (
+    GRAPH_DRIFT_OBSERVATIONS_PASS_ID,
+    GRAPH_DRIFT_OBSERVATIONS_VERSION,
+    GraphDriftObservationsPass,
+)
 from .stream_history import (
     EventTypeDiff,
     StreamDiff,
@@ -53,8 +58,11 @@ __all__ = [
     "EdgeTypeDrift",
     "EventTypeDiff",
     "EvidenceLayer",
+    "GRAPH_DRIFT_OBSERVATIONS_PASS_ID",
+    "GRAPH_DRIFT_OBSERVATIONS_VERSION",
     "GraphDrift",
     "GraphDriftComparisonError",
+    "GraphDriftObservationsPass",
     "NodeAttributeChange",
     "NodeTypeDrift",
     "PassVersion",
