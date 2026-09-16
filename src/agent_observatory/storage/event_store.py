@@ -32,29 +32,49 @@ class EventStore:
         path: str | Path,
         *,
         busy_timeout_ms: int = 5_000,
+        read_only: bool = False,
     ) -> None:
         self.path = Path(path)
         if str(self.path) == ":memory:":
             raise ValueError("EventStore requires a filesystem-backed SQLite path")
         if busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
+        if not isinstance(read_only, bool):
+            raise TypeError("read_only must be a boolean")
 
         self.busy_timeout_ms = busy_timeout_ms
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
+
+        if self.read_only:
+            if not self.path.is_file():
+                raise FileNotFoundError(f"EventStore does not exist: {self.path}")
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+
         self._initialize()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         """Yield a transactional connection and always close its OS handle."""
 
-        connection = sqlite3.connect(
-            self.path,
-            timeout=max(self.busy_timeout_ms / 1000, 0.001),
-        )
+        if self.read_only:
+            database = f"{self.path.resolve().as_uri()}?mode=ro"
+            connection = sqlite3.connect(
+                database,
+                uri=True,
+                timeout=max(self.busy_timeout_ms / 1000, 0.001),
+            )
+        else:
+            connection = sqlite3.connect(
+                self.path,
+                timeout=max(self.busy_timeout_ms / 1000, 0.001),
+            )
+
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-        connection.execute("PRAGMA synchronous = NORMAL")
+        if not self.read_only:
+            connection.execute("PRAGMA synchronous = NORMAL")
 
         try:
             with connection:
@@ -64,6 +84,25 @@ class EventStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            if self.read_only:
+                journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+                if str(journal_mode).casefold() != "wal":
+                    raise EventStoreSchemaError(
+                        "EventStore requires WAL journal mode, got "
+                        f"{journal_mode!r}"
+                    )
+                meta_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (_META_TABLE,),
+                ).fetchone()
+                if not meta_exists:
+                    raise EventStoreSchemaError(
+                        "Existing SQLite file is not an EventStore: "
+                        "event_store_meta table is missing"
+                    )
+                self._validate_existing_schema(connection)
+                return
+
             journal_mode = connection.execute(
                 "PRAGMA journal_mode = WAL"
             ).fetchone()[0]
@@ -251,6 +290,9 @@ class EventStore:
         self,
         events: Iterable[ObservationEvent],
     ) -> tuple[StoredEvent, ...]:
+        if self.read_only:
+            raise RuntimeError("cannot append to read-only EventStore")
+
         prepared = tuple(self._prepare_event(event) for event in events)
         if not prepared:
             return ()
@@ -381,6 +423,16 @@ class EventStore:
             ).fetchall()
 
         return tuple(str(row["stream_id"]) for row in rows)
+
+    def stream_exists(self, stream_id: str) -> bool:
+        if not isinstance(stream_id, str) or not stream_id.strip():
+            raise ValueError("stream_id must be a non-empty string")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM events WHERE stream_id = ? LIMIT 1",
+                (stream_id,),
+            ).fetchone()
+        return row is not None
 
     def count_events(self) -> int:
         with self._connect() as connection:
