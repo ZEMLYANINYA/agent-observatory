@@ -85,13 +85,15 @@ def _print_summary(
     print("EVIDENCE COUNTS:")
     for event_type in (
         EventType.TCP_LISTENER_OBSERVED,
+        EventType.WINDOWS_SERVICE_OBSERVED,
         EventType.DOCKER_PORT_PUBLISHED,
         EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
     ):
         print(f"  {event_type.value:<36} {counts.get(event_type, 0)}")
 
     scope_counts: Counter[str] = Counter()
-    attribution_counts: Counter[str] = Counter()
+    listener_attribution_counts: Counter[str] = Counter()
+    service_attribution_counts: Counter[str] = Counter()
     for event in events:
         if event.event_type in (
             EventType.TCP_LISTENER_OBSERVED,
@@ -99,7 +101,11 @@ def _print_summary(
         ):
             scope_counts[str(event.payload.get("bind_scope"))] += 1
         if event.event_type is EventType.TCP_LISTENER_OBSERVED:
-            attribution_counts[str(event.payload.get("attribution_state"))] += 1
+            listener_attribution_counts[str(event.payload.get("attribution_state"))] += 1
+        if event.event_type is EventType.WINDOWS_SERVICE_OBSERVED:
+            service_attribution_counts[
+                str(event.payload.get("process_attribution_state"))
+            ] += 1
 
     print()
     print("BIND SCOPE COUNTS:")
@@ -111,16 +117,25 @@ def _print_summary(
 
     print()
     print("LISTENER ATTRIBUTION COUNTS:")
-    if not attribution_counts:
+    if not listener_attribution_counts:
         print("  none")
     else:
-        for state in sorted(attribution_counts):
-            print(f"  {state:<12} {attribution_counts[state]}")
+        for state in sorted(listener_attribution_counts):
+            print(f"  {state:<12} {listener_attribution_counts[state]}")
+
+    print()
+    print("SERVICE PROCESS ATTRIBUTION COUNTS:")
+    if not service_attribution_counts:
+        print("  none")
+    else:
+        for state in sorted(service_attribution_counts):
+            print(f"  {state:<12} {service_attribution_counts[state]}")
 
     print()
     print("SEMANTICS:")
     print("  bind scope is address topology only")
-    print("  process attribution requires a stable bracketed process instance")
+    print("  listener process attribution requires a stable bracketed process instance")
+    print("  service process attribution also requires post-service process verification")
     print("  no remote reachability, authentication, or exploitability is inferred")
     if capture.has_failures:
         print("  capture is partial because at least one requested collector failed")
@@ -131,6 +146,11 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
         event
         for event in events
         if event.event_type is EventType.TCP_LISTENER_OBSERVED
+    )
+    service_events = tuple(
+        event
+        for event in events
+        if event.event_type is EventType.WINDOWS_SERVICE_OBSERVED
     )
     docker_events = tuple(
         event
@@ -164,6 +184,35 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
             print(line)
 
     print()
+    print("WINDOWS SERVICES FOR LISTENER PROCESSES:")
+    if not service_events:
+        print("  none observed")
+    else:
+        for event in service_events:
+            line = (
+                "  "
+                f"{event.payload.get('service_name')} "
+                f"display={event.payload.get('display_name')} "
+                f"pid={event.payload.get('process_id')} "
+                f"state={event.payload.get('state')} "
+                f"start_mode={event.payload.get('start_mode')} "
+                f"attribution={event.payload.get('process_attribution_state')}"
+            )
+            process = event.payload.get("process")
+            if isinstance(process, dict):
+                line += (
+                    f" process={process.get('pid')}@{process.get('started_at')}"
+                    f" name={event.payload.get('process_name') or '?'}"
+                    f" path={event.payload.get('executable_path') or '?'}"
+                )
+            else:
+                line += (
+                    " reason="
+                    f"{event.payload.get('process_attribution_reason') or '?'}"
+                )
+            print(line)
+
+    print()
     print("DOCKER PUBLISHED PORTS:")
     if not docker_events:
         print("  none observed")
@@ -190,8 +239,9 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Capture point-in-time Windows TCP listener and Docker published-port "
-            "evidence into the append-only EventStore without inferring reachability."
+            "Capture point-in-time Windows TCP listener, listener-service, and "
+            "Docker published-port evidence into the append-only EventStore "
+            "without inferring reachability."
         )
     )
     parser.add_argument(
@@ -217,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--details",
         action="store_true",
-        help="Print observed listener and Docker publication facts.",
+        help="Print observed listener, Windows service, and Docker publication facts.",
     )
     args = parser.parse_args(argv)
 
