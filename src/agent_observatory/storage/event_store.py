@@ -172,12 +172,16 @@ class EventStore:
     ) -> tuple[EventType, int, float, str, str | None, str, dict[str, object]]:
         if not isinstance(event.event_type, EventType):
             raise TypeError("event_type must be an EventType")
-        if isinstance(event.event_version, bool) or event.event_version <= 0:
-            raise ValueError("event_version must be a positive integer")
-        if not isinstance(event.event_version, int):
+        if not isinstance(event.event_version, int) or isinstance(
+            event.event_version, bool
+        ):
             raise TypeError("event_version must be an integer")
-        if not isinstance(event.observed_at, (int, float)) or not math.isfinite(
-            float(event.observed_at)
+        if event.event_version <= 0:
+            raise ValueError("event_version must be a positive integer")
+        if (
+            not isinstance(event.observed_at, (int, float))
+            or isinstance(event.observed_at, bool)
+            or not math.isfinite(float(event.observed_at))
         ):
             raise ValueError("observed_at must be a finite Unix timestamp")
         if not isinstance(event.source, str) or not event.source.strip():
