@@ -6,13 +6,11 @@ from collections.abc import Callable, Iterable
 from agent_observatory.endpoint.discovery import DEFAULT_PROFILES, discover_root_processes
 from agent_observatory.endpoint.identity import (
     FileIdentity,
-    ProcessInstanceIdentity,
     build_process_identities,
     get_windows_file_identity,
     sha256_file,
 )
-from agent_observatory.endpoint.models import ParentRelation, RelationBasis
-from agent_observatory.endpoint.network import TcpConnection
+from agent_observatory.endpoint.models import ParentRelation, ProcessSnapshot, RelationBasis
 from agent_observatory.endpoint.process_tree import build_capture_parent_relations
 from agent_observatory.endpoint.windows_capture import (
     WindowsCapture,
@@ -90,12 +88,12 @@ def _normalize_application_names(
 def _selected_processes(
     capture: WindowsCapture,
     application_names: tuple[str, ...],
-) -> tuple[object, ...]:
+) -> tuple[ProcessSnapshot, ...]:
     stable = stable_processes(capture)
     snapshots = collect_application_snapshots(stable)
     allowed = {name.casefold() for name in application_names}
 
-    by_pid = {}
+    by_pid: dict[int, ProcessSnapshot] = {}
     for snapshot in snapshots:
         if snapshot.application.profile.name.casefold() not in allowed:
             continue
