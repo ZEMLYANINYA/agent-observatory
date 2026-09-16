@@ -60,10 +60,12 @@ def _configured_application_names() -> tuple[str, ...]:
 def _normalize_application_names(
     application_names: Iterable[str] | None,
 ) -> tuple[str, ...]:
+    configured_names = _configured_application_names()
+    configured_by_key = {name.casefold(): name for name in configured_names}
     raw_names = (
         tuple(application_names)
         if application_names is not None
-        else _configured_application_names()
+        else configured_names
     )
 
     names: list[str] = []
@@ -72,12 +74,19 @@ def _normalize_application_names(
     for name in raw_names:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("application_names must contain non-empty strings")
-        normalized = name.strip()
-        key = normalized.casefold()
+        requested = name.strip()
+        key = requested.casefold()
+        canonical = configured_by_key.get(key)
+        if canonical is None:
+            configured_text = ", ".join(configured_names)
+            raise ValueError(
+                f"unknown application target {requested!r}; configured targets: "
+                f"{configured_text}"
+            )
         if key in seen:
             continue
         seen.add(key)
-        names.append(normalized)
+        names.append(canonical)
 
     if not names:
         raise ValueError("at least one application name is required")
