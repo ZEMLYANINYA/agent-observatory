@@ -18,7 +18,7 @@ class EventStoreTests(unittest.TestCase):
     def _event(
         event_type: EventType = EventType.PROCESS_OBSERVED,
         *,
-        observed_at: float = 1_789_588_800.0,
+        observed_at: float = 1_700_000_000.0,
         source: str = "test-sensor",
         stream_id: str | None = "capture-001",
         payload: dict[str, object] | None = None,
