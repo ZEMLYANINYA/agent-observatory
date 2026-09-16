@@ -1,3 +1,18 @@
+from .graph_drift import (
+    EdgeAttributeChange,
+    EdgeFact,
+    EdgeTypeDrift,
+    GraphDrift,
+    GraphDriftComparisonError,
+    NodeAttributeChange,
+    NodeTypeDrift,
+    ProcessContinuityStatus,
+    ProcessIdentityContinuity,
+    ProjectionNoteCount,
+    ProjectionNoteDrift,
+    compare_graph_streams,
+    compare_graphs,
+)
 from .stream_history import (
     EventTypeDiff,
     StreamDiff,
@@ -7,9 +22,22 @@ from .stream_history import (
 )
 
 __all__ = [
+    "EdgeAttributeChange",
+    "EdgeFact",
+    "EdgeTypeDrift",
     "EventTypeDiff",
+    "GraphDrift",
+    "GraphDriftComparisonError",
+    "NodeAttributeChange",
+    "NodeTypeDrift",
+    "ProcessContinuityStatus",
+    "ProcessIdentityContinuity",
+    "ProjectionNoteCount",
+    "ProjectionNoteDrift",
     "StreamDiff",
     "StreamSummary",
+    "compare_graph_streams",
+    "compare_graphs",
     "compare_streams",
     "summarize_stream",
 ]
