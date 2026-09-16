@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -154,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+
+    if not args.db.is_file():
+        print(f"Inspection failed: EventStore does not exist: {args.db}", file=sys.stderr)
+        return 1
 
     try:
         store = EventStore(args.db)
