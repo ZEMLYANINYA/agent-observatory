@@ -67,12 +67,36 @@ def _connection_payload(connection: TcpConnection) -> dict[str, object]:
     }
 
 
-def _application_payload(snapshot, connections: Iterable[TcpConnection], capture):
-    grouped_connections = connections_by_pid(connections)
-    identities = {
-        identity.pid: identity
-        for identity in build_process_identities(snapshot.processes)
+def _file_identity_payload(file_identity) -> dict[str, int] | None:
+    if file_identity is None:
+        return None
+
+    return {
+        "volume_serial": file_identity.volume_serial,
+        "file_id": file_identity.file_id,
     }
+
+
+def _hash_observation_payload(hash_observation) -> dict[str, object]:
+    return {
+        "sha256": hash_observation.sha256,
+        "state": hash_observation.state.value,
+        "observed_at": (
+            _utc_iso(hash_observation.observed_at)
+            if hash_observation.observed_at is not None
+            else None
+        ),
+        "hash_gap_ms": hash_observation.hash_gap_ms,
+    }
+
+
+def _application_payload(
+    snapshot,
+    connections: Iterable[TcpConnection],
+    capture: WindowsCapture,
+    identities_by_pid,
+):
+    grouped_connections = connections_by_pid(connections)
 
     root_pid = snapshot.application.root_process.pid
     process_ids = {process.pid for process in snapshot.processes}
@@ -81,11 +105,12 @@ def _application_payload(snapshot, connections: Iterable[TcpConnection], capture
     processes = []
 
     for process in snapshot.processes:
-        identity = identities[process.pid]
+        identity = identities_by_pid[process.pid]
         role = classify_process_role(
             process.command_line,
             is_root=(process.pid == root_pid),
         )
+        executable = identity.executable
 
         processes.append(
             {
@@ -96,9 +121,13 @@ def _application_payload(snapshot, connections: Iterable[TcpConnection], capture
                 "role": role.value,
                 "command_line_sha256": identity.command_line_sha256,
                 "executable": {
-                    "path": identity.executable.path,
-                    "sha256": identity.executable.sha256,
-                    "hash_state": identity.executable.hash_state.value,
+                    "path": executable.path,
+                    "file_identity": _file_identity_payload(
+                        executable.file_identity
+                    ),
+                    "hash_observation": _hash_observation_payload(
+                        executable.hash_observation
+                    ),
                 },
                 "tcp_connections": [
                     _connection_payload(connection)
@@ -145,26 +174,50 @@ def build_evidence(target: str, state: str) -> dict[str, object]:
                 f"application {target!r} matched multiple roots; capture separately"
             )
 
-    selected_pids = {
-        process.pid
+    selected_processes = tuple(
+        process
         for snapshot in selected
         for process in snapshot.processes
+    )
+    selected_pids = {
+        process.pid
+        for process in selected_processes
     }
     selected_connections = tuple(
         connection
         for connection in attributable
         if connection.pid in selected_pids
     )
+    identities_by_pid = {
+        identity.pid: identity
+        for identity in build_process_identities(
+            selected_processes,
+            process_observed_at=capture.process_before_interval.finished_at,
+        )
+    }
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "experiment": "EXP-002",
         "captured_at": _utc_now_iso(),
         "target": target,
         "state": state,
         "capture": _capture_intervals(capture),
+        "hash_timing": {
+            "process_observation_anchor": "capture.process_before.finished_at",
+            "note": (
+                "hash_gap_ms is measured from the end of the pre-network process "
+                "inventory to executable hash start. Exact per-process CIM row "
+                "observation timestamps are not available."
+            ),
+        },
         "applications": [
-            _application_payload(snapshot, selected_connections, capture)
+            _application_payload(
+                snapshot,
+                selected_connections,
+                capture,
+                identities_by_pid,
+            )
             for snapshot in selected
         ],
     }
@@ -265,11 +318,18 @@ def _capture_summary(evidence: dict[str, object]) -> dict[str, int]:
         int(application["attribution_guard_rejected_tcp_count"])
         for application in applications
     )
+    non_hashed_count = sum(
+        1
+        for application in applications
+        for process in application["processes"]
+        if process["executable"]["hash_observation"]["state"] != "hashed"
+    )
     return {
         "process_count": process_count,
         "tcp_count": tcp_count,
         "unknown_count": unknown_count,
         "guard_rejected_tcp_count": guard_rejected_count,
+        "non_hashed_count": non_hashed_count,
     }
 
 
@@ -333,6 +393,7 @@ def _print_transition_observation(observation: dict[str, object]) -> None:
         f"processes={summary['process_count']} "
         f"tcp={summary['tcp_count']} "
         f"unknown={summary['unknown_count']} "
+        f"non_hashed={summary['non_hashed_count']} "
         f"guard_rejected={summary['guard_rejected_tcp_count']}"
     )
 
@@ -396,12 +457,13 @@ def run_transition_query(
     session_started_ns = time.monotonic_ns()
     path = _session_path(target)
     session: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "experiment": "EXP-002",
         "mode": "transition_query",
         "target": target,
         "started_at": _utc_now_iso(),
         "monotonic_origin_ns": session_started_ns,
+        "embedded_evidence_schema_version": 2,
         "capture_policy": {
             "burst_interval_seconds": interval_seconds,
             "post_response_delays_seconds": list(post_delays_seconds),
@@ -565,11 +627,17 @@ def _run_single_capture(target: str, state: str) -> int:
             for process in application["processes"]
             if process["role"] == "unknown"
         )
+        non_hashed_count = sum(
+            1
+            for process in application["processes"]
+            if process["executable"]["hash_observation"]["state"] != "hashed"
+        )
         print(
             f"{application['application']}: "
             f"processes={application['process_count']} "
             f"tcp={tcp_count} "
             f"unknown={unknown_count} "
+            f"non_hashed={non_hashed_count} "
             f"guard_rejected={application['attribution_guard_rejected_tcp_count']}"
         )
 
