@@ -26,13 +26,23 @@ def _stream_id() -> str:
     return f"service-exposure:{timestamp}:{uuid4().hex[:8]}"
 
 
+def _collect_live_service_exposure_capture(
+    *,
+    include_docker: bool,
+) -> ServiceExposureCapture:
+    return collect_service_exposure_capture(
+        include_docker=include_docker,
+        include_firewall=True,
+    )
+
+
 def capture_into_store(
     store: EventStore,
     *,
     source: str,
     stream_id: str,
     include_docker: bool = True,
-    capture_provider: Callable[..., ServiceExposureCapture] = collect_service_exposure_capture,
+    capture_provider: Callable[..., ServiceExposureCapture] = _collect_live_service_exposure_capture,
 ) -> tuple[ServiceExposureCapture, tuple[StoredEvent, ...]]:
     capture = capture_provider(include_docker=include_docker)
     appended = append_service_exposure_capture(
@@ -86,6 +96,8 @@ def _print_summary(
     for event_type in (
         EventType.TCP_LISTENER_OBSERVED,
         EventType.WINDOWS_SERVICE_OBSERVED,
+        EventType.WINDOWS_FIREWALL_PROFILE_OBSERVED,
+        EventType.WINDOWS_NETWORK_PROFILE_OBSERVED,
         EventType.DOCKER_PORT_PUBLISHED,
         EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
     ):
@@ -94,6 +106,7 @@ def _print_summary(
     scope_counts: Counter[str] = Counter()
     listener_attribution_counts: Counter[str] = Counter()
     service_attribution_counts: Counter[str] = Counter()
+    network_category_counts: Counter[str] = Counter()
     for event in events:
         if event.event_type in (
             EventType.TCP_LISTENER_OBSERVED,
@@ -106,6 +119,8 @@ def _print_summary(
             service_attribution_counts[
                 str(event.payload.get("process_attribution_state"))
             ] += 1
+        if event.event_type is EventType.WINDOWS_NETWORK_PROFILE_OBSERVED:
+            network_category_counts[str(event.payload.get("network_category"))] += 1
 
     print()
     print("BIND SCOPE COUNTS:")
@@ -132,10 +147,20 @@ def _print_summary(
             print(f"  {state:<12} {service_attribution_counts[state]}")
 
     print()
+    print("NETWORK CATEGORY COUNTS:")
+    if not network_category_counts:
+        print("  none")
+    else:
+        for category in sorted(network_category_counts):
+            print(f"  {category:<12} {network_category_counts[category]}")
+
+    print()
     print("SEMANTICS:")
     print("  bind scope is address topology only")
     print("  listener process attribution requires a stable bracketed process instance")
     print("  service process attribution also requires post-service process verification")
+    print("  firewall profile defaults are context, not per-listener allow/block verdicts")
+    print("  network category describes interface profile assignment only")
     print("  no remote reachability, authentication, or exploitability is inferred")
     if capture.has_failures:
         print("  capture is partial because at least one requested collector failed")
@@ -151,6 +176,16 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
         event
         for event in events
         if event.event_type is EventType.WINDOWS_SERVICE_OBSERVED
+    )
+    firewall_events = tuple(
+        event
+        for event in events
+        if event.event_type is EventType.WINDOWS_FIREWALL_PROFILE_OBSERVED
+    )
+    network_profile_events = tuple(
+        event
+        for event in events
+        if event.event_type is EventType.WINDOWS_NETWORK_PROFILE_OBSERVED
     )
     docker_events = tuple(
         event
@@ -213,6 +248,38 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
             print(line)
 
     print()
+    print("WINDOWS FIREWALL PROFILES:")
+    if not firewall_events:
+        print("  none observed")
+    else:
+        for event in firewall_events:
+            print(
+                "  "
+                f"{event.payload.get('profile_name')} "
+                f"enabled={event.payload.get('enabled')} "
+                f"default_inbound={event.payload.get('default_inbound_action')} "
+                f"default_outbound={event.payload.get('default_outbound_action')} "
+                f"allow_inbound_rules={event.payload.get('allow_inbound_rules')} "
+                f"allow_local_rules={event.payload.get('allow_local_firewall_rules')}"
+            )
+
+    print()
+    print("WINDOWS NETWORK PROFILES:")
+    if not network_profile_events:
+        print("  none observed")
+    else:
+        for event in network_profile_events:
+            print(
+                "  "
+                f"interface={event.payload.get('interface_alias')} "
+                f"index={event.payload.get('interface_index')} "
+                f"name={event.payload.get('name')} "
+                f"category={event.payload.get('network_category')} "
+                f"ipv4={event.payload.get('ipv4_connectivity')} "
+                f"ipv6={event.payload.get('ipv6_connectivity')}"
+            )
+
+    print()
     print("DOCKER PUBLISHED PORTS:")
     if not docker_events:
         print("  none observed")
@@ -239,9 +306,9 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Capture point-in-time Windows TCP listener, listener-service, and "
-            "Docker published-port evidence into the append-only EventStore "
-            "without inferring reachability."
+            "Capture point-in-time Windows TCP listener, listener-service, firewall "
+            "context, and Docker published-port evidence into the append-only "
+            "EventStore without inferring reachability."
         )
     )
     parser.add_argument(
@@ -267,7 +334,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--details",
         action="store_true",
-        help="Print observed listener, Windows service, and Docker publication facts.",
+        help=(
+            "Print observed listener, Windows service, firewall/network profile, "
+            "and Docker publication facts."
+        ),
     )
     args = parser.parse_args(argv)
 
