@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Mapping, Protocol, Sequence
 
@@ -34,9 +34,7 @@ class ReasonCode:
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, str) or not _REASON_CODE_RE.fullmatch(self.value):
-            raise ValueError(
-                "reason code must match ^[A-Z][A-Z0-9_]*$"
-            )
+            raise ValueError("reason code must match ^[A-Z][A-Z0-9_]*$")
 
     def __str__(self) -> str:
         return self.value
@@ -74,6 +72,8 @@ class AnalysisPassMetadata:
             raise ValueError(
                 "pass_id must be lowercase kebab-case and start with a letter"
             )
+        if not isinstance(self.version, PassVersion):
+            raise TypeError("version must be PassVersion")
         if not isinstance(self.description, str) or not self.description.strip():
             raise ValueError("description must be a non-empty string")
 
@@ -88,12 +88,14 @@ class AnalysisEvidenceRef:
     event_ids: tuple[int, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.layer, EvidenceLayer):
+            raise TypeError("layer must be EvidenceLayer")
         if not isinstance(self.reference_id, str) or not self.reference_id.strip():
             raise ValueError("reference_id must be a non-empty string")
         if not isinstance(self.stream_id, str) or not self.stream_id.strip():
             raise ValueError("stream_id must be a non-empty string")
-        if not self.event_ids:
-            raise ValueError("event_ids must contain at least one source event id")
+        if not isinstance(self.event_ids, tuple) or not self.event_ids:
+            raise ValueError("event_ids must be a non-empty tuple")
         if any(
             isinstance(event_id, bool)
             or not isinstance(event_id, int)
@@ -120,36 +122,36 @@ class AnalysisFinding:
     summary: str
     evidence: tuple[AnalysisEvidenceRef, ...]
     limitations: tuple[str, ...] = ()
-    attributes: Mapping[str, object] = None  # type: ignore[assignment]
+    attributes: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.finding_id, str) or not self.finding_id.strip():
             raise ValueError("finding_id must be a non-empty string")
         if not isinstance(self.pass_id, str) or not _PASS_ID_RE.fullmatch(self.pass_id):
             raise ValueError("finding pass_id must be lowercase kebab-case")
+        if not isinstance(self.pass_version, PassVersion):
+            raise TypeError("pass_version must be PassVersion")
+        if not isinstance(self.reason_code, ReasonCode):
+            raise TypeError("reason_code must be ReasonCode")
         if not isinstance(self.summary, str) or not self.summary.strip():
             raise ValueError("summary must be a non-empty string")
-        if not self.evidence:
-            raise ValueError("a finding must reference at least one evidence item")
+        if not isinstance(self.evidence, tuple) or not self.evidence:
+            raise ValueError("a finding must reference a non-empty evidence tuple")
         if any(not isinstance(item, AnalysisEvidenceRef) for item in self.evidence):
             raise TypeError("evidence must contain AnalysisEvidenceRef values")
+        if not isinstance(self.limitations, tuple):
+            raise TypeError("limitations must be a tuple")
         if any(not isinstance(item, str) or not item.strip() for item in self.limitations):
             raise ValueError("limitations must contain non-empty strings")
-
-        attributes: Mapping[str, object]
-        if self.attributes is None:
-            attributes = {}
-            object.__setattr__(self, "attributes", attributes)
-        elif not isinstance(self.attributes, Mapping):
+        if not isinstance(self.attributes, Mapping):
             raise TypeError("attributes must be a mapping")
-        else:
-            attributes = self.attributes
-
-        if any(not isinstance(key, str) for key in attributes):
+        if any(not isinstance(key, str) for key in self.attributes):
             raise TypeError("attribute keys must be strings")
+
+        attributes = dict(self.attributes)
         try:
             json.dumps(
-                dict(attributes),
+                attributes,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -157,6 +159,7 @@ class AnalysisFinding:
             )
         except (TypeError, ValueError) as exc:
             raise ValueError("attributes must be finite JSON-compatible data") from exc
+        object.__setattr__(self, "attributes", attributes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +274,70 @@ def _validate_contract_surface() -> None:
         )
 
 
+def _graph_for_stream(context: AnalysisContext, stream_id: str) -> EvidenceGraph:
+    if stream_id == context.before_graph.stream_id:
+        return context.before_graph
+    if stream_id == context.after_graph.stream_id:
+        return context.after_graph
+    raise AnalysisContractError(
+        f"evidence references stream outside analysis context: {stream_id}"
+    )
+
+
+def _validate_evidence_ref(
+    context: AnalysisContext,
+    evidence_ref: AnalysisEvidenceRef,
+) -> None:
+    graph = _graph_for_stream(context, evidence_ref.stream_id)
+    graph_event_ids = set(graph.source_event_ids)
+    missing = set(evidence_ref.event_ids) - graph_event_ids
+    if missing:
+        raise AnalysisContractError(
+            "evidence references source event ids not present in graph: "
+            + ", ".join(str(event_id) for event_id in sorted(missing))
+        )
+
+    if evidence_ref.layer is EvidenceLayer.EVENT:
+        if len(evidence_ref.event_ids) != 1:
+            raise AnalysisContractError("EVENT evidence must reference exactly one event")
+        expected = f"event:{evidence_ref.event_ids[0]}"
+        if evidence_ref.reference_id != expected:
+            raise AnalysisContractError(
+                f"EVENT evidence reference_id must be {expected!r}"
+            )
+        return
+
+    if evidence_ref.layer is EvidenceLayer.GRAPH_NODE:
+        nodes = {node.node_id: node for node in graph.nodes}
+        node = nodes.get(evidence_ref.reference_id)
+        if node is None:
+            raise AnalysisContractError(
+                f"graph node evidence not found: {evidence_ref.reference_id}"
+            )
+        node_event_ids = set(_event_ids_from_refs(node.evidence))
+        if not set(evidence_ref.event_ids) <= node_event_ids:
+            raise AnalysisContractError(
+                "graph node evidence contains event ids outside node provenance"
+            )
+        return
+
+    if evidence_ref.layer is EvidenceLayer.GRAPH_EDGE:
+        edges = {edge.edge_id: edge for edge in graph.edges}
+        edge = edges.get(evidence_ref.reference_id)
+        if edge is None:
+            raise AnalysisContractError(
+                f"graph edge evidence not found: {evidence_ref.reference_id}"
+            )
+        edge_event_ids = set(_event_ids_from_refs(edge.evidence))
+        if not set(evidence_ref.event_ids) <= edge_event_ids:
+            raise AnalysisContractError(
+                "graph edge evidence contains event ids outside edge provenance"
+            )
+        return
+
+    raise AnalysisContractError(f"unsupported evidence layer: {evidence_ref.layer}")
+
+
 def run_analysis_passes(
     context: AnalysisContext,
     passes: Sequence[AnalysisPass],
@@ -315,9 +382,9 @@ def run_analysis_passes(
                     f"finding {finding.finding_id!r} version does not match pass metadata"
                 )
             if finding.finding_id in seen_finding_ids:
-                raise AnalysisContractError(
-                    f"duplicate finding id: {finding.finding_id}"
-                )
+                raise AnalysisContractError(f"duplicate finding id: {finding.finding_id}")
+            for evidence_ref in finding.evidence:
+                _validate_evidence_ref(context, evidence_ref)
             seen_finding_ids.add(finding.finding_id)
             findings_for_pass.append(finding)
 
