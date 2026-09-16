@@ -8,6 +8,7 @@ from unittest.mock import patch
 from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
     HostTcpListener,
+    ListenerAttributionState,
 )
 from agent_observatory.evidence import (
     CollectorStatus,
@@ -44,7 +45,19 @@ class ServiceExposureCaptureToolTests(unittest.TestCase):
         docker_observed_at = 20.0 if docker_status is CollectorStatus.SUCCEEDED else None
         docker_count = 0 if docker_status is CollectorStatus.SUCCEEDED else None
         return ServiceExposureCapture(
-            listeners=(HostTcpListener(101, "0.0.0.0", 11434),),
+            listeners=(
+                HostTcpListener(
+                    101,
+                    "0.0.0.0",
+                    11434,
+                    owner_identity_basis="stable_process_instance",
+                    attribution_state=ListenerAttributionState.ATTRIBUTED,
+                    process_started_at=5.0,
+                    process_name="ollama.exe",
+                    executable_path=r"C:\Apps\ollama.exe",
+                    attribution_reason=None,
+                ),
+            ),
             docker_ports=docker_ports,
             listener_observed_at=10.0,
             docker_observed_at=docker_observed_at,
@@ -54,7 +67,7 @@ class ServiceExposureCaptureToolTests(unittest.TestCase):
                     "windows_tcp_listeners",
                     CollectorStatus.SUCCEEDED,
                     1,
-                    observation_basis="windows_get_nettcpconnection_snapshot",
+                    observation_basis="windows_bracketed_get_nettcpconnection_snapshot",
                 ),
                 self._report(
                     "docker_published_ports",
@@ -81,7 +94,7 @@ class ServiceExposureCaptureToolTests(unittest.TestCase):
                     "windows_tcp_listeners",
                     CollectorStatus.SUCCEEDED,
                     1,
-                    observation_basis="windows_get_nettcpconnection_snapshot",
+                    observation_basis="windows_bracketed_get_nettcpconnection_snapshot",
                 ),
                 self._report(
                     "docker_published_ports",
@@ -136,6 +149,7 @@ class ServiceExposureCaptureToolTests(unittest.TestCase):
                 EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
             ),
         )
+        self.assertEqual(loaded[0].payload["process"], {"pid": 101, "started_at": 5.0})
 
     def test_main_success_distinguishes_zero_docker_publications(self) -> None:
         capture = self._success_capture()
@@ -165,6 +179,9 @@ class ServiceExposureCaptureToolTests(unittest.TestCase):
         self.assertIn("docker_published_ports     status=succeeded records=0", output)
         self.assertIn("0.0.0.0:11434", output)
         self.assertIn("scope=wildcard", output)
+        self.assertIn("attributed", output)
+        self.assertIn("process=101@5.0", output)
+        self.assertIn("name=ollama.exe", output)
         self.assertIn("no remote reachability", output)
         self.assertEqual(len(persisted), 2)
 
