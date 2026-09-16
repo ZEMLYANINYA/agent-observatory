@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -10,6 +9,7 @@ from .discovery import discover_root_processes
 from .models import ProcessSnapshot
 from .process_tree import build_validated_process_tree
 from .roles import classify_process_role
+from .windows_powershell import run_powershell_text
 
 
 def _powershell_process_inventory() -> str:
@@ -32,22 +32,7 @@ Select-Object `
 ConvertTo-Json -Compress
 """
 
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    return result.stdout
+    return run_powershell_text(command)
 
 
 def parse_process_records(
