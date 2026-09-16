@@ -35,6 +35,11 @@ from .windows_firewall_events import (
     windows_firewall_profile_event,
     windows_network_profile_event,
 )
+from .windows_firewall_rule_events import (
+    append_windows_firewall_rule_inventory,
+    windows_firewall_rule_event,
+    windows_firewall_rule_event_batch,
+)
 
 __all__ = [
     "ApplicationDiscoveryOutcome",
@@ -46,6 +51,7 @@ __all__ = [
     "append_service_exposure_capture",
     "append_windows_capture",
     "append_windows_firewall_context",
+    "append_windows_firewall_rule_inventory",
     "collect_service_exposure_capture",
     "docker_published_port_event",
     "executable_evidence_events",
@@ -62,6 +68,8 @@ __all__ = [
     "windows_capture_event_batch",
     "windows_firewall_context_event_batch",
     "windows_firewall_profile_event",
+    "windows_firewall_rule_event",
+    "windows_firewall_rule_event_batch",
     "windows_network_profile_event",
     "windows_service_event",
 ]
