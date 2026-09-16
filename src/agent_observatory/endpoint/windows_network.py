@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from typing import Any, Iterable
 
 from .network import TcpConnection
+from .windows_powershell import run_powershell_text
 
 
 def _powershell_tcp_inventory() -> str:
@@ -20,22 +20,7 @@ Select-Object `
 ConvertTo-Json -Compress
 """
 
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    return result.stdout
+    return run_powershell_text(command)
 
 
 def parse_tcp_records(

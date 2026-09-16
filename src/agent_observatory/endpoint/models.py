@@ -10,6 +10,12 @@ class RelationState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class RelationBasis(str, Enum):
+    CURRENT_SNAPSHOT = "current_snapshot"
+    PARENT_OBSERVED_BEFORE_ONLY = "parent_observed_before_only"
+    REPORTED_PPID_ONLY = "reported_ppid_only"
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessSnapshot:
     """Minimal process evidence used for process-tree attribution."""
@@ -29,4 +35,5 @@ class ParentRelation:
     child_pid: int
     reported_parent_pid: int
     state: RelationState
+    basis: RelationBasis = RelationBasis.CURRENT_SNAPSHOT
     reason: str | None = None
