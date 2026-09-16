@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
@@ -10,6 +9,7 @@ from .identity import capture_identity_key
 from .models import ProcessSnapshot
 from .network import TcpConnection
 from .windows_network import parse_tcp_records
+from .windows_powershell import run_powershell_text
 from .windows_snapshot import parse_process_records
 
 
@@ -97,22 +97,7 @@ $processAfterFinishedAt = [DateTime]::UtcNow
 } | ConvertTo-Json -Compress -Depth 5
 """
 
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    return result.stdout
+    return run_powershell_text(command)
 
 
 def _timestamp(value: Any) -> float:
