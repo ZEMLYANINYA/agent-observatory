@@ -10,8 +10,15 @@ from .endpoint_events import (
     tcp_connection_event,
 )
 from .service_exposure_capture import (
+    CollectorStatus,
+    ServiceExposureCapture,
+    ServiceExposureCollectorReport,
     append_service_exposure_batch,
+    append_service_exposure_capture,
+    collect_service_exposure_capture,
+    service_exposure_capture_event_batch,
     service_exposure_event_batch,
+    service_exposure_manifest_event,
 )
 from .service_exposure_events import (
     docker_published_port_event,
@@ -24,9 +31,14 @@ from .windows_capture_events import (
 
 __all__ = [
     "ApplicationDiscoveryOutcome",
+    "CollectorStatus",
+    "ServiceExposureCapture",
+    "ServiceExposureCollectorReport",
     "application_discovery_event",
     "append_service_exposure_batch",
+    "append_service_exposure_capture",
     "append_windows_capture",
+    "collect_service_exposure_capture",
     "docker_published_port_event",
     "executable_evidence_events",
     "file_hash_event",
@@ -34,7 +46,9 @@ __all__ = [
     "operator_marker_event",
     "process_observed_event",
     "process_relationship_event",
+    "service_exposure_capture_event_batch",
     "service_exposure_event_batch",
+    "service_exposure_manifest_event",
     "tcp_connection_event",
     "tcp_listener_event",
     "windows_capture_event_batch",
