@@ -33,6 +33,7 @@ def _collect_live_service_exposure_capture(
     return collect_service_exposure_capture(
         include_docker=include_docker,
         include_firewall=True,
+        include_firewall_rules=True,
     )
 
 
@@ -98,6 +99,7 @@ def _print_summary(
         EventType.WINDOWS_SERVICE_OBSERVED,
         EventType.WINDOWS_FIREWALL_PROFILE_OBSERVED,
         EventType.WINDOWS_NETWORK_PROFILE_OBSERVED,
+        EventType.WINDOWS_FIREWALL_RULE_OBSERVED,
         EventType.DOCKER_PORT_PUBLISHED,
         EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
     ):
@@ -107,6 +109,10 @@ def _print_summary(
     listener_attribution_counts: Counter[str] = Counter()
     service_attribution_counts: Counter[str] = Counter()
     network_category_counts: Counter[str] = Counter()
+    firewall_rule_enabled_counts: Counter[str] = Counter()
+    firewall_rule_action_counts: Counter[str] = Counter()
+    firewall_rule_profile_counts: Counter[str] = Counter()
+
     for event in events:
         if event.event_type in (
             EventType.TCP_LISTENER_OBSERVED,
@@ -121,6 +127,12 @@ def _print_summary(
             ] += 1
         if event.event_type is EventType.WINDOWS_NETWORK_PROFILE_OBSERVED:
             network_category_counts[str(event.payload.get("network_category"))] += 1
+        if event.event_type is EventType.WINDOWS_FIREWALL_RULE_OBSERVED:
+            firewall_rule_enabled_counts[
+                "enabled" if event.payload.get("enabled") is True else "disabled"
+            ] += 1
+            firewall_rule_action_counts[str(event.payload.get("action"))] += 1
+            firewall_rule_profile_counts[str(event.payload.get("profile"))] += 1
 
     print()
     print("BIND SCOPE COUNTS:")
@@ -155,12 +167,29 @@ def _print_summary(
             print(f"  {category:<12} {network_category_counts[category]}")
 
     print()
+    print("FIREWALL RULE SUMMARY:")
+    if not firewall_rule_enabled_counts:
+        print("  none observed")
+    else:
+        print("  enabled state:")
+        for state in ("enabled", "disabled"):
+            if firewall_rule_enabled_counts[state]:
+                print(f"    {state:<10} {firewall_rule_enabled_counts[state]}")
+        print("  actions:")
+        for action in sorted(firewall_rule_action_counts):
+            print(f"    {action:<18} {firewall_rule_action_counts[action]}")
+        print("  profile scopes:")
+        for profile in sorted(firewall_rule_profile_counts):
+            print(f"    {profile:<28} {firewall_rule_profile_counts[profile]}")
+
+    print()
     print("SEMANTICS:")
     print("  bind scope is address topology only")
     print("  listener process attribution requires a stable bracketed process instance")
     print("  service process attribution also requires post-service process verification")
     print("  firewall profile defaults are context, not per-listener allow/block verdicts")
     print("  network category describes interface profile assignment only")
+    print("  firewall rules are source facts; no listener applicability is inferred")
     print("  no remote reachability, authentication, or exploitability is inferred")
     if capture.has_failures:
         print("  capture is partial because at least one requested collector failed")
@@ -186,6 +215,11 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
         event
         for event in events
         if event.event_type is EventType.WINDOWS_NETWORK_PROFILE_OBSERVED
+    )
+    firewall_rule_events = tuple(
+        event
+        for event in events
+        if event.event_type is EventType.WINDOWS_FIREWALL_RULE_OBSERVED
     )
     docker_events = tuple(
         event
@@ -280,6 +314,17 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
             )
 
     print()
+    print("WINDOWS FIREWALL RULES:")
+    if not firewall_rule_events:
+        print("  none observed")
+    else:
+        print(
+            f"  {len(firewall_rule_events)} rule facts persisted; "
+            "individual rules are intentionally not dumped by this command"
+        )
+        print("  use the filtered rule/correlation inspector in the next layer")
+
+    print()
     print("DOCKER PUBLISHED PORTS:")
     if not docker_events:
         print("  none observed")
@@ -307,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Capture point-in-time Windows TCP listener, listener-service, firewall "
-            "context, and Docker published-port evidence into the append-only "
+            "context/rule, and Docker published-port evidence into the append-only "
             "EventStore without inferring reachability."
         )
     )
@@ -336,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Print observed listener, Windows service, firewall/network profile, "
-            "and Docker publication facts."
+            "firewall rule summary, and Docker publication facts."
         ),
     )
     args = parser.parse_args(argv)
