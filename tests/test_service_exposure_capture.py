@@ -2,11 +2,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from agent_observatory.endpoint.models import ProcessSnapshot
 from agent_observatory.endpoint.network import TcpConnection
 from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
     HostTcpListener,
+    ListenerAttributionState,
 )
+from agent_observatory.endpoint.windows_capture import CaptureInterval, WindowsCapture
 from agent_observatory.evidence import (
     CollectorStatus,
     ServiceExposureCapture,
@@ -27,6 +30,49 @@ class ServiceExposureCaptureTests(unittest.TestCase):
             TcpConnection(30, "Established", "10.0.0.5", 50000, "198.51.100.1", 443),
             TcpConnection(20, "Listen", "127.0.0.1", 6379, "0.0.0.0", 0),
             TcpConnection(10, "Listen", "0.0.0.0", 11434, "0.0.0.0", 0),
+        )
+
+    @classmethod
+    def _windows_capture(cls):
+        stable_before = ProcessSnapshot(
+            pid=10,
+            ppid=1,
+            name="ollama.exe",
+            started_at=5.0,
+            command_line="ollama serve",
+            executable_path=r"C:\Apps\ollama.exe",
+        )
+        stable_after = ProcessSnapshot(
+            pid=10,
+            ppid=1,
+            name="ollama.exe",
+            started_at=5.0,
+            command_line="ollama serve",
+            executable_path=r"C:\Apps\ollama.exe",
+        )
+        reused_before = ProcessSnapshot(
+            pid=20,
+            ppid=1,
+            name="redis-server.exe",
+            started_at=6.0,
+            command_line="redis-server.exe",
+            executable_path=r"C:\Redis\redis-server.exe",
+        )
+        reused_after = ProcessSnapshot(
+            pid=20,
+            ppid=1,
+            name="other.exe",
+            started_at=7.0,
+            command_line="other.exe",
+            executable_path=r"C:\Temp\other.exe",
+        )
+        return WindowsCapture(
+            processes_before=(stable_before, reused_before),
+            tcp_connections=cls._tcp_connections(),
+            processes_after=(stable_after, reused_after),
+            process_before_interval=CaptureInterval(1.0, 2.0),
+            network_interval=CaptureInterval(3.0, 4.0),
+            process_after_interval=CaptureInterval(5.0, 6.0),
         )
 
     @staticmethod
@@ -146,25 +192,43 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                 stream_id="",
             )
 
-    def test_live_capture_success_distinguishes_zero_docker_publications(self) -> None:
+    def test_live_capture_uses_bracketed_listener_attribution(self) -> None:
         capture = collect_service_exposure_capture(
-            tcp_provider=self._tcp_connections,
+            windows_capture_provider=self._windows_capture,
             docker_provider=lambda: (),
-            clock=self._clock(10.0, 20.0, 30.0),
+            clock=self._clock(20.0, 30.0),
         )
 
         self.assertFalse(capture.has_failures)
         self.assertEqual(len(capture.listeners), 2)
         self.assertEqual(capture.docker_ports, ())
-        self.assertEqual(capture.listener_observed_at, 10.0)
+        self.assertEqual(capture.listener_observed_at, 4.0)
         self.assertEqual(capture.docker_observed_at, 20.0)
         self.assertEqual(capture.manifest_observed_at, 30.0)
+
+        by_pid = {listener.owner_pid: listener for listener in capture.listeners}
+        attributed = by_pid[10]
+        unresolved = by_pid[20]
+        self.assertEqual(attributed.attribution_state, ListenerAttributionState.ATTRIBUTED)
+        self.assertEqual(attributed.process_started_at, 5.0)
+        self.assertEqual(attributed.process_name, "ollama.exe")
+        self.assertEqual(attributed.owner_identity_basis, "stable_process_instance")
+        self.assertEqual(unresolved.attribution_state, ListenerAttributionState.UNRESOLVED)
         self.assertEqual(
-            tuple((item.collector, item.status, item.record_count) for item in capture.collector_reports),
-            (
-                ("windows_tcp_listeners", CollectorStatus.SUCCEEDED, 2),
-                ("docker_published_ports", CollectorStatus.SUCCEEDED, 0),
-            ),
+            unresolved.attribution_reason,
+            "owner_pid_not_stable_across_process_bracket",
+        )
+
+        windows_report = capture.collector_reports[0]
+        self.assertEqual(windows_report.status, CollectorStatus.SUCCEEDED)
+        self.assertEqual(windows_report.record_count, 2)
+        self.assertEqual(
+            windows_report.observation_basis,
+            "windows_bracketed_get_nettcpconnection_snapshot",
+        )
+        self.assertEqual(
+            (capture.collector_reports[1].status, capture.collector_reports[1].record_count),
+            (CollectorStatus.SUCCEEDED, 0),
         )
 
     def test_live_capture_preserves_docker_failure_in_manifest_state(self) -> None:
@@ -172,9 +236,9 @@ class ServiceExposureCaptureTests(unittest.TestCase):
             raise RuntimeError("docker daemon unavailable")
 
         capture = collect_service_exposure_capture(
-            tcp_provider=self._tcp_connections,
+            windows_capture_provider=self._windows_capture,
             docker_provider=fail_docker,
-            clock=self._clock(10.0, 20.0),
+            clock=self._clock(20.0),
         )
 
         self.assertTrue(capture.has_failures)
@@ -192,9 +256,9 @@ class ServiceExposureCaptureTests(unittest.TestCase):
 
         capture = collect_service_exposure_capture(
             include_docker=False,
-            tcp_provider=self._tcp_connections,
+            windows_capture_provider=self._windows_capture,
             docker_provider=docker_must_not_run,
-            clock=self._clock(10.0, 20.0),
+            clock=self._clock(20.0),
         )
 
         self.assertFalse(capture.has_failures)
@@ -215,7 +279,7 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                     collector="windows_tcp_listeners",
                     status=CollectorStatus.SUCCEEDED,
                     record_count=0,
-                    observation_basis="windows_get_nettcpconnection_snapshot",
+                    observation_basis="windows_bracketed_get_nettcpconnection_snapshot",
                 ),
                 ServiceExposureCollectorReport(
                     collector="docker_published_ports",
@@ -252,7 +316,7 @@ class ServiceExposureCaptureTests(unittest.TestCase):
                     collector="windows_tcp_listeners",
                     status=CollectorStatus.SUCCEEDED,
                     record_count=1,
-                    observation_basis="windows_get_nettcpconnection_snapshot",
+                    observation_basis="windows_bracketed_get_nettcpconnection_snapshot",
                 ),
                 ServiceExposureCollectorReport(
                     collector="docker_published_ports",
