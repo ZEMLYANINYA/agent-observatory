@@ -9,10 +9,15 @@ from .endpoint_events import (
     process_relationship_event,
     tcp_connection_event,
 )
+from .windows_capture_events import (
+    append_windows_capture,
+    windows_capture_event_batch,
+)
 
 __all__ = [
     "ApplicationDiscoveryOutcome",
     "application_discovery_event",
+    "append_windows_capture",
     "executable_evidence_events",
     "file_hash_event",
     "file_identity_event",
@@ -20,4 +25,5 @@ __all__ = [
     "process_observed_event",
     "process_relationship_event",
     "tcp_connection_event",
+    "windows_capture_event_batch",
 ]
