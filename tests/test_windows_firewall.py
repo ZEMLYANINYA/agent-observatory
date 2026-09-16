@@ -12,6 +12,8 @@ from agent_observatory.endpoint.windows_firewall import (
     parse_windows_firewall_context,
 )
 from agent_observatory.evidence import (
+    append_windows_firewall_context,
+    windows_firewall_context_event_batch,
     windows_firewall_profile_event,
     windows_network_profile_event,
 )
@@ -191,6 +193,40 @@ class WindowsFirewallContextTests(unittest.TestCase):
                 EventType.WINDOWS_NETWORK_PROFILE_OBSERVED,
             ),
         )
+
+    def test_context_batch_is_deterministic_and_atomic(self) -> None:
+        context = parse_windows_firewall_context(json.dumps(_payload()))
+        batch = windows_firewall_context_event_batch(
+            context,
+            source="firewall-test",
+            stream_id="firewall:batch",
+        )
+
+        self.assertEqual(len(batch), 5)
+        self.assertTrue(
+            all(event.observed_at == context.capture_finished_at for event in batch)
+        )
+        self.assertEqual(
+            tuple(event.payload.get("profile_name") for event in batch[:3]),
+            ("Domain", "Private", "Public"),
+        )
+        self.assertEqual(
+            tuple(event.payload.get("interface_index") for event in batch[3:]),
+            (17, 42),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = EventStore(Path(temp_dir) / "events.sqlite3")
+            stored = append_windows_firewall_context(
+                store,
+                context,
+                source="firewall-test",
+                stream_id="firewall:batch",
+            )
+            loaded = store.read_events(stream_id="firewall:batch")
+
+        self.assertEqual(tuple(event.event_id for event in stored), (1, 2, 3, 4, 5))
+        self.assertEqual(tuple(event.event_id for event in loaded), (1, 2, 3, 4, 5))
 
 
 if __name__ == "__main__":
