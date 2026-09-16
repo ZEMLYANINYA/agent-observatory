@@ -273,8 +273,16 @@ def _project_relationship(
     if state != "valid":
         _add_note(notes, event, f"relationship_not_valid:{state}")
         return
-    if parent_node_id is None:
+    if parent_node_id is None or parent_ref is None:
         _add_note(notes, event, "relationship_parent_identity_unavailable")
+        return
+
+    reported_parent_pid = _integer(event.payload.get("reported_parent_pid"))
+    if reported_parent_pid is None or reported_parent_pid <= 0:
+        _add_note(notes, event, "relationship_reported_parent_pid_invalid")
+        return
+    if reported_parent_pid != parent_ref[0]:
+        _add_note(notes, event, "relationship_parent_pid_mismatch")
         return
 
     edges.append(
@@ -287,7 +295,7 @@ def _project_relationship(
                 "state": state,
                 "basis": event.payload.get("basis"),
                 "reason": event.payload.get("reason"),
-                "reported_parent_pid": event.payload.get("reported_parent_pid"),
+                "reported_parent_pid": reported_parent_pid,
             },
             evidence=(_ref(event),),
         )
