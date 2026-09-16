@@ -15,7 +15,7 @@ def tcp_listener_event(
     stream_id: str | None = None,
     observation_basis: str = "windows_get_nettcpconnection_snapshot",
 ) -> ObservationEvent:
-    """Adapt one point-in-time listener without upgrading PID to process identity."""
+    """Adapt one listener while preserving explicit process-attribution quality."""
 
     if not isinstance(observation_basis, str) or not observation_basis.strip():
         raise ValueError("observation_basis must be a non-empty string")
@@ -29,6 +29,11 @@ def tcp_listener_event(
             "protocol": listener.protocol,
             "owner_pid": listener.owner_pid,
             "owner_identity_basis": listener.owner_identity_basis,
+            "attribution_state": listener.attribution_state.value,
+            "attribution_reason": listener.attribution_reason,
+            "process": listener.process_ref,
+            "process_name": listener.process_name,
+            "executable_path": listener.executable_path,
             "state": listener.state,
             "local_address": listener.local_address,
             "local_port": listener.local_port,
