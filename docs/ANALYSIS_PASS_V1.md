@@ -1,8 +1,8 @@
 # Analysis Pass v1
 
-Analysis Pass v1 defines the first deterministic interpretation contract above Graph Drift.
+Analysis Pass v1 defines the first deterministic interpretation contract above Graph Drift and includes the first production pass built on that contract.
 
-It does **not** introduce anomaly detection, severity, confidence, causal claims, maliciousness judgments, or automatic blocking.
+It does **not** introduce anomaly detection, severity, confidence, causal claims, maliciousness judgments, importance scoring, or automatic blocking.
 
 The architectural rule remains:
 
@@ -32,9 +32,13 @@ run_analysis_passes(...)
 build_analysis_context(...)
 ```
 
-No production detector pass is included in this initial contract layer.
+The first production pass is:
 
-That separation is deliberate. The framework is frozen and tested before concrete finding logic is added.
+```text
+graph-drift-observations v1.0.0
+```
+
+Its job is only to translate already-computed Graph Drift into deterministic reviewable findings with complete evidence references.
 
 ## Position in the pipeline
 
@@ -151,15 +155,24 @@ Format:
 UPPER_SNAKE_CASE
 ```
 
-Examples planned for future passes:
+The first production pass emits reason-code families such as:
 
 ```text
 PROCESS_INSTANCE_APPEARED
-REMOTE_ENDPOINT_APPEARED
+PROCESS_INSTANCE_DISAPPEARED
 PROCESS_IDENTITY_REPLACED
-EXECUTABLE_IDENTITY_CHANGED
-PARENT_RELATION_CHANGED
-APPLICATION_ROOT_BECAME_AMBIGUOUS
+REMOTE_ENDPOINT_APPEARED
+REMOTE_ENDPOINT_DISAPPEARED
+FILE_IDENTITY_APPEARED
+FILE_IDENTITY_DISAPPEARED
+PARENT_RELATION_APPEARED
+PARENT_RELATION_DISAPPEARED
+PARENT_RELATION_ATTRIBUTES_CHANGED
+TCP_RELATION_APPEARED
+TCP_RELATION_DISAPPEARED
+EDGE_CORRESPONDENCE_AMBIGUOUS
+PROJECTION_NOTE_COUNT_INCREASED
+PROJECTION_NOTE_COUNT_DECREASED
 ```
 
 A reason code is **not** a severity or verdict.
@@ -221,15 +234,23 @@ This is not an omission waiting to be casually filled. Those concepts require th
 
 The runner enforces global uniqueness within one analysis run.
 
-Concrete passes should derive finding IDs from stable semantic identity rather than timestamps, random UUIDs, or EventStore append IDs where possible.
-
-For example a future pass might use a shape such as:
+The first production pass derives finding IDs from canonical semantic finding content:
 
 ```text
-graph-drift-observations:remote-endpoint-appeared:tcp:203.0.113.10:443
+pass_id
+reason_code
+subject attributes
 ```
 
-The exact production convention will be defined with the first concrete pass.
+It hashes that canonical JSON description and does not use random UUIDs, wall-clock timestamps, or EventStore append IDs as finding identity.
+
+Current shape:
+
+```text
+graph-drift-observations:<reason-code-lowercase>:<sha256-prefix>
+```
+
+The source `event_id` values remain evidence provenance, not finding identity.
 
 ## Evidence references
 
@@ -312,12 +333,13 @@ EventStore event_id
 
 A pass should use it when a finding can be described accurately only with an important evidence boundary attached.
 
-Examples could include:
+Examples include:
 
 ```text
-Point-in-time TCP topology only; byte-level traffic was not observed.
-UDP/QUIC is outside the current capture path.
-The observation establishes temporal presence, not causality.
+Observed only in the later compared graph; this does not establish first occurrence.
+Point-in-time absence does not establish termination or continuous absence.
+Remote endpoint identity is only a protocol/address/port tuple.
+Service identity and transferred data are not inferred from endpoint topology.
 ```
 
 Limitations are part of the finding contract, not decorative logging.
@@ -375,16 +397,98 @@ findings
 
 The aggregate also exposes flattened `findings` and `finding_count` convenience properties.
 
-No persistence format is defined in this first contract step. EventStore remains the only durable evidence ledger.
+No persistence format is defined in v1. EventStore remains the only durable evidence ledger.
 
 If analysis results are persisted later, they must remain derived artifacts that can be recomputed and must never overwrite source observations.
 
-## Current non-goals
+# graph-drift-observations v1.0.0
 
-Analysis Pass v1 does not yet provide:
+`GraphDriftObservationsPass` is the first production implementation of the framework.
+
+It consumes the already-computed `GraphDrift` inside `AnalysisContext`. It does not reclassify Graph Drift and does not decide whether any change is good, bad, expected, or important.
+
+The pass covers all four current Graph Drift dimensions:
 
 ```text
-production detector passes
+node drift
+edge drift
+process identity continuity
+projection-note drift
+```
+
+## Node findings
+
+For each current `GraphNodeType`, the pass can emit added, removed, and attribute-changed findings.
+
+Examples:
+
+```text
+APPLICATION_APPEARED
+PROCESS_INSTANCE_DISAPPEARED
+FILE_IDENTITY_APPEARED
+REMOTE_ENDPOINT_ATTRIBUTES_CHANGED
+```
+
+An appearance means only that the node is represented in the later graph but not the earlier graph.
+
+A disappearance means only that the node is represented in the earlier graph but not the later graph.
+
+## Edge findings
+
+Current edge families are translated into relation-specific reason codes.
+
+Examples:
+
+```text
+APPLICATION_DISCOVERY_RELATION_APPEARED
+PARENT_RELATION_DISAPPEARED
+EXECUTED_FROM_RELATION_ATTRIBUTES_CHANGED
+TCP_RELATION_APPEARED
+```
+
+If duplicate structurally identical edges exist, Graph Drift can identify multiplicity change without identifying which provenance instance constitutes the delta. Findings therefore carry that limitation explicitly.
+
+When multiple unmatched edge candidates share one endpoint key, the pass also emits:
+
+```text
+EDGE_CORRESPONDENCE_AMBIGUOUS
+```
+
+It does not invent one-to-one correspondence.
+
+## Process identity continuity findings
+
+`same_instance` continuity emits no finding because it is unchanged structure.
+
+Current change findings are:
+
+```text
+PROCESS_IDENTITY_REPLACED
+PROCESS_IDENTITY_CONTINUITY_MIXED
+```
+
+`PROCESS_IDENTITY_REPLACED` means the same PID slot maps to non-overlapping `PID + started_at` process identities across the compared graphs.
+
+It does not explain why the process identity changed.
+
+## Projection-note drift findings
+
+Evidence Graph intentionally leaves some semantics unprojected. Changes in those note counts remain reviewable through:
+
+```text
+PROJECTION_NOTE_COUNT_INCREASED
+PROJECTION_NOTE_COUNT_DECREASED
+```
+
+These findings link directly to the source EventStore event IDs represented by the projection notes.
+
+A change in projection-note count is not automatically a change in underlying system behavior. It may instead describe a change in evidence that Evidence Graph v1 intentionally does not model as nodes or edges.
+
+## Current non-goals
+
+Analysis Pass v1 does not provide:
+
+```text
 severity
 confidence scoring
 confidence calibration
@@ -399,23 +503,7 @@ policy engines
 LLM interpretation
 ```
 
-These are future layers, not implicit behavior of the pass contract.
-
-## Planned first production pass
-
-After the contract is validated, the first concrete pass should consume Graph Drift and emit descriptive observations such as:
-
-```text
-PROCESS_INSTANCE_APPEARED
-PROCESS_INSTANCE_DISAPPEARED
-REMOTE_ENDPOINT_APPEARED
-REMOTE_ENDPOINT_DISAPPEARED
-PROCESS_IDENTITY_REPLACED
-```
-
-That pass should not call any of these changes anomalous or suspicious.
-
-Its job is only to translate deterministic graph structure into stable reviewable findings with complete evidence references.
+The first production pass also does not perform cross-capture scoring, behavioral baselining, service attribution, packet interpretation, or threat classification.
 
 ## Design principle
 
