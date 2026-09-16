@@ -145,6 +145,23 @@ def _application_payload(
     }
 
 
+def _format_root_candidates(snapshots) -> str:
+    candidates = []
+    for snapshot in snapshots:
+        root = snapshot.application.root_process
+        candidates.append(
+            "(" + ", ".join(
+                (
+                    f"pid={root.pid}",
+                    f"ppid={root.ppid}",
+                    f"started_at={_utc_iso(root.started_at)}",
+                    f"path={root.executable_path!r}",
+                )
+            ) + ")"
+        )
+    return "; ".join(candidates)
+
+
 def build_evidence(target: str, state: str) -> dict[str, object]:
     capture = collect_windows_capture()
     stable = stable_processes(capture)
@@ -170,8 +187,10 @@ def build_evidence(target: str, state: str) -> dict[str, object]:
             )
 
         if len(selected) > 1:
+            candidates = _format_root_candidates(selected)
             raise ValueError(
-                f"application {target!r} matched multiple roots; capture separately"
+                f"application {target!r} matched {len(selected)} root candidates: "
+                f"{candidates}; capture separately after the launch tree settles"
             )
 
     selected_processes = tuple(
@@ -299,37 +318,54 @@ def _event_payload(
 
 def _capture_summary(evidence: dict[str, object]) -> dict[str, int]:
     applications = evidence["applications"]
-    process_count = sum(
-        int(application["process_count"])
-        for application in applications
-    )
-    tcp_count = sum(
-        len(process["tcp_connections"])
+    processes = [
+        process
         for application in applications
         for process in application["processes"]
-    )
-    unknown_count = sum(
+    ]
+    connections = [
+        connection
+        for process in processes
+        for connection in process["tcp_connections"]
+    ]
+
+    tcp_count = len(connections)
+    tcp_established_count = sum(
         1
-        for application in applications
-        for process in application["processes"]
-        if process["role"] == "unknown"
+        for connection in connections
+        if str(connection["state"]).casefold() == "established"
     )
-    guard_rejected_count = sum(
-        int(application["attribution_guard_rejected_tcp_count"])
-        for application in applications
-    )
-    non_hashed_count = sum(
+    tcp_bound_count = sum(
         1
-        for application in applications
-        for process in application["processes"]
-        if process["executable"]["hash_observation"]["state"] != "hashed"
+        for connection in connections
+        if str(connection["state"]).casefold() == "bound"
     )
+    tcp_other_count = tcp_count - tcp_established_count - tcp_bound_count
+
     return {
-        "process_count": process_count,
+        "process_count": sum(
+            int(application["process_count"])
+            for application in applications
+        ),
+        # Kept for compatibility with already-written transition evidence.
         "tcp_count": tcp_count,
-        "unknown_count": unknown_count,
-        "guard_rejected_tcp_count": guard_rejected_count,
-        "non_hashed_count": non_hashed_count,
+        "tcp_established_count": tcp_established_count,
+        "tcp_bound_count": tcp_bound_count,
+        "tcp_other_count": tcp_other_count,
+        "unknown_count": sum(
+            1
+            for process in processes
+            if process["role"] == "unknown"
+        ),
+        "guard_rejected_tcp_count": sum(
+            int(application["attribution_guard_rejected_tcp_count"])
+            for application in applications
+        ),
+        "non_hashed_count": sum(
+            1
+            for process in processes
+            if process["executable"]["hash_observation"]["state"] != "hashed"
+        ),
     }
 
 
@@ -442,7 +478,10 @@ def _print_transition_observation(observation: dict[str, object]) -> None:
     print(
         f"{relative_text:>12}  {phase:<20} "
         f"processes={summary['process_count']} "
-        f"tcp={summary['tcp_count']} "
+        f"tcp_total={summary['tcp_count']} "
+        f"established={summary['tcp_established_count']} "
+        f"bound={summary['tcp_bound_count']} "
+        f"other={summary['tcp_other_count']} "
         f"unknown={summary['unknown_count']} "
         f"non_hashed={summary['non_hashed_count']} "
         f"guard_rejected={summary['guard_rejected_tcp_count']}"
@@ -688,27 +727,17 @@ def _run_single_capture(target: str, state: str) -> int:
     print(f"EXP-002 evidence saved: {path}")
 
     for application in evidence["applications"]:
-        tcp_count = sum(
-            len(process["tcp_connections"])
-            for process in application["processes"]
-        )
-        unknown_count = sum(
-            1
-            for process in application["processes"]
-            if process["role"] == "unknown"
-        )
-        non_hashed_count = sum(
-            1
-            for process in application["processes"]
-            if process["executable"]["hash_observation"]["state"] != "hashed"
-        )
+        summary = _capture_summary({"applications": [application]})
         print(
             f"{application['application']}: "
-            f"processes={application['process_count']} "
-            f"tcp={tcp_count} "
-            f"unknown={unknown_count} "
-            f"non_hashed={non_hashed_count} "
-            f"guard_rejected={application['attribution_guard_rejected_tcp_count']}"
+            f"processes={summary['process_count']} "
+            f"tcp_total={summary['tcp_count']} "
+            f"established={summary['tcp_established_count']} "
+            f"bound={summary['tcp_bound_count']} "
+            f"other={summary['tcp_other_count']} "
+            f"unknown={summary['unknown_count']} "
+            f"non_hashed={summary['non_hashed_count']} "
+            f"guard_rejected={summary['guard_rejected_tcp_count']}"
         )
 
     return 0
