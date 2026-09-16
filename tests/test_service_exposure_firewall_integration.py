@@ -179,6 +179,7 @@ class ServiceExposureFirewallIntegrationTests(unittest.TestCase):
         collector.assert_called_once_with(
             include_docker=False,
             include_firewall=True,
+            include_firewall_rules=True,
         )
 
 
