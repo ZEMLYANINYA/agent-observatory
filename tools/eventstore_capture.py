@@ -103,12 +103,18 @@ def _print_summary(
 
 def _print_timeline(events: tuple[StoredEvent, ...]) -> None:
     print()
-    print("TIMELINE:")
+    print("OBSERVED TIMELINE:")
+    print("  sorted by observed_at; event_id is append order")
     if not events:
         print("  none")
         return
 
-    for event in events:
+    ordered = sorted(
+        events,
+        key=lambda event: (event.observed_at, event.event_id),
+    )
+
+    for event in ordered:
         process = event.payload.get("process")
         process_text = ""
         if isinstance(process, dict) and "pid" in process:
@@ -185,7 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--timeline",
         action="store_true",
-        help="Print the persisted events for this capture after append.",
+        help=(
+            "Print persisted events for this capture sorted by observation time; "
+            "event ids still show append order."
+        ),
     )
     args = parser.parse_args(argv)
 
