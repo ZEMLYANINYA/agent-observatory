@@ -9,6 +9,10 @@ from .endpoint_events import (
     process_relationship_event,
     tcp_connection_event,
 )
+from .service_exposure_capture import (
+    append_service_exposure_batch,
+    service_exposure_event_batch,
+)
 from .service_exposure_events import (
     docker_published_port_event,
     tcp_listener_event,
@@ -21,6 +25,7 @@ from .windows_capture_events import (
 __all__ = [
     "ApplicationDiscoveryOutcome",
     "application_discovery_event",
+    "append_service_exposure_batch",
     "append_windows_capture",
     "docker_published_port_event",
     "executable_evidence_events",
@@ -29,6 +34,7 @@ __all__ = [
     "operator_marker_event",
     "process_observed_event",
     "process_relationship_event",
+    "service_exposure_event_batch",
     "tcp_connection_event",
     "tcp_listener_event",
     "windows_capture_event_batch",
