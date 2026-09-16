@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from agent_observatory.endpoint.docker_ports import collect_docker_published_ports
+from agent_observatory.endpoint.models import ProcessSnapshot
 from agent_observatory.endpoint.network import TcpConnection
 from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
@@ -17,16 +18,29 @@ from agent_observatory.endpoint.windows_capture import (
     WindowsCapture,
     collect_windows_capture,
 )
+from agent_observatory.endpoint.windows_services import (
+    WindowsServiceProcessObservation,
+    WindowsServiceSnapshot,
+    collect_windows_services,
+    service_observations_for_listeners,
+    service_processes_stable_across_inventory,
+)
+from agent_observatory.endpoint.windows_snapshot import collect_processes
 from agent_observatory.storage import EventStore, EventType, ObservationEvent, StoredEvent
 
 from .service_exposure_events import (
     docker_published_port_event,
     tcp_listener_event,
+    windows_service_event,
 )
 
 
 UNBRACKETED_LISTENER_OBSERVATION_BASIS = "windows_get_nettcpconnection_snapshot"
 BRACKETED_LISTENER_OBSERVATION_BASIS = "windows_bracketed_get_nettcpconnection_snapshot"
+WINDOWS_SERVICE_OBSERVATION_BASIS = (
+    "windows_cim_win32_service_running_snapshot; "
+    "process_verified_after_service_inventory"
+)
 
 
 class CollectorStatus(str, Enum):
@@ -78,6 +92,8 @@ class ServiceExposureCapture:
     docker_observed_at: float | None
     manifest_observed_at: float
     collector_reports: tuple[ServiceExposureCollectorReport, ...]
+    windows_services: tuple[WindowsServiceProcessObservation, ...] = ()
+    service_observed_at: float | None = None
 
     @property
     def has_failures(self) -> bool:
@@ -101,27 +117,31 @@ def collect_service_exposure_capture(
     *,
     include_docker: bool = True,
     windows_capture_provider: Callable[[], WindowsCapture] = collect_windows_capture,
+    windows_service_provider: Callable[[], Iterable[WindowsServiceSnapshot]] = collect_windows_services,
+    process_verification_provider: Callable[[], Iterable[ProcessSnapshot]] = collect_processes,
     docker_provider: Callable[[], Iterable[DockerPublishedPort]] = collect_docker_published_ports,
     clock: Callable[[], float] = time.time,
 ) -> ServiceExposureCapture:
-    """Collect bracket-attributed host listeners and Docker publication evidence.
+    """Collect bracket-attributed listener, service, and Docker publication evidence.
 
-    The Windows collector reuses the existing process/TCP/process bracket so a
-    listener is bound to a process instance only when that owner is stable
-    across both process snapshots. Unstable owners remain listener facts with
-    unresolved attribution rather than being discarded.
+    Listener ownership reuses the existing process/TCP/process bracket. Running
+    Win32_Service records are collected only after listener collection succeeds,
+    then a fresh process inventory verifies that a service PID still represents
+    the same process instance across the service snapshot. Docker collection is
+    independent and keeps its own observation anchor.
 
     Collector failures are preserved in the manifest instead of being converted
-    into an empty successful observation. Docker observations retain their own
-    time anchor because Docker inspection is not simultaneous with the Windows
-    bracketed capture.
+    into empty successful observations.
     """
 
     listeners: tuple[HostTcpListener, ...] = ()
+    windows_services: tuple[WindowsServiceProcessObservation, ...] = ()
     docker_ports: tuple[DockerPublishedPort, ...] = ()
     listener_observed_at: float | None = None
+    service_observed_at: float | None = None
     docker_observed_at: float | None = None
     reports: list[ServiceExposureCollectorReport] = []
+    windows_capture: WindowsCapture | None = None
 
     try:
         windows_capture = windows_capture_provider()
@@ -137,6 +157,48 @@ def collect_service_exposure_capture(
         )
     except Exception as exc:
         reports.append(_failure_report("windows_tcp_listeners", exc))
+
+    if windows_capture is None:
+        reports.append(
+            ServiceExposureCollectorReport(
+                collector="windows_listener_services",
+                status=CollectorStatus.SKIPPED,
+                record_count=None,
+            )
+        )
+    elif not listeners:
+        reports.append(
+            ServiceExposureCollectorReport(
+                collector="windows_listener_services",
+                status=CollectorStatus.SKIPPED,
+                record_count=None,
+            )
+        )
+    else:
+        try:
+            service_inventory = tuple(windows_service_provider())
+            service_snapshot_finished_at = float(clock())
+            verification_processes = tuple(process_verification_provider())
+            verified_processes = service_processes_stable_across_inventory(
+                windows_capture,
+                verification_processes,
+            )
+            windows_services = service_observations_for_listeners(
+                service_inventory,
+                listeners,
+                verified_processes=verified_processes,
+            )
+            service_observed_at = service_snapshot_finished_at
+            reports.append(
+                ServiceExposureCollectorReport(
+                    collector="windows_listener_services",
+                    status=CollectorStatus.SUCCEEDED,
+                    record_count=len(windows_services),
+                    observation_basis=WINDOWS_SERVICE_OBSERVATION_BASIS,
+                )
+            )
+        except Exception as exc:
+            reports.append(_failure_report("windows_listener_services", exc))
 
     if include_docker:
         try:
@@ -168,6 +230,8 @@ def collect_service_exposure_capture(
         docker_observed_at=docker_observed_at,
         manifest_observed_at=float(clock()),
         collector_reports=tuple(reports),
+        windows_services=windows_services,
+        service_observed_at=service_observed_at,
     )
 
 
@@ -284,6 +348,21 @@ def service_exposure_capture_event_batch(
             for listener in capture.listeners
         )
 
+    service_events: tuple[ObservationEvent, ...] = ()
+    if capture.windows_services:
+        if capture.service_observed_at is None:
+            raise ValueError("Windows service observations require service_observed_at")
+        service_events = tuple(
+            windows_service_event(
+                observation,
+                observed_at=capture.service_observed_at,
+                source=source,
+                stream_id=stream_id,
+                observation_basis=WINDOWS_SERVICE_OBSERVATION_BASIS,
+            )
+            for observation in capture.windows_services
+        )
+
     docker_events: tuple[ObservationEvent, ...] = ()
     if capture.docker_ports:
         if capture.docker_observed_at is None:
@@ -300,6 +379,7 @@ def service_exposure_capture_event_batch(
 
     return (
         *listener_events,
+        *service_events,
         *docker_events,
         service_exposure_manifest_event(capture, source=source, stream_id=stream_id),
     )
