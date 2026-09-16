@@ -23,6 +23,7 @@ from .service_exposure_capture import (
 from .service_exposure_events import (
     docker_published_port_event,
     tcp_listener_event,
+    windows_service_event,
 )
 from .windows_capture_events import (
     append_windows_capture,
@@ -52,4 +53,5 @@ __all__ = [
     "tcp_connection_event",
     "tcp_listener_event",
     "windows_capture_event_batch",
+    "windows_service_event",
 ]
