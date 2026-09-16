@@ -366,6 +366,22 @@ class EventStore:
 
         return tuple(self._row_to_event(row) for row in rows)
 
+    def list_stream_ids(self) -> tuple[str, ...]:
+        """Return non-null stream ids in first-append order."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT stream_id, MIN(event_id) AS first_event_id
+                FROM events
+                WHERE stream_id IS NOT NULL
+                GROUP BY stream_id
+                ORDER BY first_event_id ASC
+                """
+            ).fetchall()
+
+        return tuple(str(row["stream_id"]) for row in rows)
+
     def count_events(self) -> int:
         with self._connect() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM events").fetchone()[0])
