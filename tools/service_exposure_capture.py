@@ -91,12 +91,15 @@ def _print_summary(
         print(f"  {event_type.value:<36} {counts.get(event_type, 0)}")
 
     scope_counts: Counter[str] = Counter()
+    attribution_counts: Counter[str] = Counter()
     for event in events:
         if event.event_type in (
             EventType.TCP_LISTENER_OBSERVED,
             EventType.DOCKER_PORT_PUBLISHED,
         ):
             scope_counts[str(event.payload.get("bind_scope"))] += 1
+        if event.event_type is EventType.TCP_LISTENER_OBSERVED:
+            attribution_counts[str(event.payload.get("attribution_state"))] += 1
 
     print()
     print("BIND SCOPE COUNTS:")
@@ -107,8 +110,17 @@ def _print_summary(
             print(f"  {scope:<12} {scope_counts[scope]}")
 
     print()
+    print("LISTENER ATTRIBUTION COUNTS:")
+    if not attribution_counts:
+        print("  none")
+    else:
+        for state in sorted(attribution_counts):
+            print(f"  {state:<12} {attribution_counts[state]}")
+
+    print()
     print("SEMANTICS:")
     print("  bind scope is address topology only")
+    print("  process attribution requires a stable bracketed process instance")
     print("  no remote reachability, authentication, or exploitability is inferred")
     if capture.has_failures:
         print("  capture is partial because at least one requested collector failed")
@@ -132,13 +144,24 @@ def _print_details(events: tuple[StoredEvent, ...]) -> None:
         print("  none observed")
     else:
         for event in listener_events:
-            print(
+            line = (
                 "  "
                 f"{_endpoint(event.payload.get('local_address'), event.payload.get('local_port'))} "
                 f"scope={event.payload.get('bind_scope')} "
                 f"owner_pid={event.payload.get('owner_pid')} "
+                f"attribution={event.payload.get('attribution_state')} "
                 f"owner_basis={event.payload.get('owner_identity_basis')}"
             )
+            process = event.payload.get("process")
+            if isinstance(process, dict):
+                line += (
+                    f" process={process.get('pid')}@{process.get('started_at')}"
+                    f" name={event.payload.get('process_name') or '?'}"
+                    f" path={event.payload.get('executable_path') or '?'}"
+                )
+            else:
+                line += f" reason={event.payload.get('attribution_reason') or '?'}"
+            print(line)
 
     print()
     print("DOCKER PUBLISHED PORTS:")
