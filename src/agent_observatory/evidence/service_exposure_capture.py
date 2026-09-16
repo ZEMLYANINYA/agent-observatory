@@ -18,6 +18,10 @@ from agent_observatory.endpoint.windows_capture import (
     WindowsCapture,
     collect_windows_capture,
 )
+from agent_observatory.endpoint.windows_firewall import (
+    WindowsFirewallContext,
+    collect_windows_firewall_context,
+)
 from agent_observatory.endpoint.windows_services import (
     WindowsServiceProcessObservation,
     WindowsServiceSnapshot,
@@ -33,6 +37,7 @@ from .service_exposure_events import (
     tcp_listener_event,
     windows_service_event,
 )
+from .windows_firewall_events import windows_firewall_context_event_batch
 
 
 UNBRACKETED_LISTENER_OBSERVATION_BASIS = "windows_get_nettcpconnection_snapshot"
@@ -40,6 +45,9 @@ BRACKETED_LISTENER_OBSERVATION_BASIS = "windows_bracketed_get_nettcpconnection_s
 WINDOWS_SERVICE_OBSERVATION_BASIS = (
     "windows_cim_win32_service_running_snapshot; "
     "process_verified_after_service_inventory"
+)
+WINDOWS_FIREWALL_CONTEXT_OBSERVATION_BASIS = (
+    "windows_get_netfirewallprofile_active_store+windows_get_netconnectionprofile"
 )
 
 
@@ -94,6 +102,7 @@ class ServiceExposureCapture:
     collector_reports: tuple[ServiceExposureCollectorReport, ...]
     windows_services: tuple[WindowsServiceProcessObservation, ...] = ()
     service_observed_at: float | None = None
+    firewall_context: WindowsFirewallContext | None = None
 
     @property
     def has_failures(self) -> bool:
@@ -116,19 +125,25 @@ def _failure_report(collector: str, exc: Exception) -> ServiceExposureCollectorR
 def collect_service_exposure_capture(
     *,
     include_docker: bool = True,
+    include_firewall: bool = False,
     windows_capture_provider: Callable[[], WindowsCapture] = collect_windows_capture,
     windows_service_provider: Callable[[], Iterable[WindowsServiceSnapshot]] = collect_windows_services,
     process_verification_provider: Callable[[], Iterable[ProcessSnapshot]] = collect_processes,
+    firewall_context_provider: Callable[[], WindowsFirewallContext] = collect_windows_firewall_context,
     docker_provider: Callable[[], Iterable[DockerPublishedPort]] = collect_docker_published_ports,
     clock: Callable[[], float] = time.time,
 ) -> ServiceExposureCapture:
-    """Collect bracket-attributed listener, service, and Docker publication evidence.
+    """Collect listener, service, firewall-context, and Docker publication evidence.
 
     Listener ownership reuses the existing process/TCP/process bracket. Running
     Win32_Service records are collected only after listener collection succeeds,
     then a fresh process inventory verifies that a service PID still represents
-    the same process instance across the service snapshot. Docker collection is
-    independent and keeps its own observation anchor.
+    the same process instance across the service snapshot.
+
+    Firewall context is independent evidence from ActiveStore firewall-profile
+    defaults and current connection profiles. It does not decide whether any
+    particular listener is allowed, reachable, or exposed. Docker collection is
+    also independent and keeps its own observation anchor.
 
     Collector failures are preserved in the manifest instead of being converted
     into empty successful observations.
@@ -136,6 +151,7 @@ def collect_service_exposure_capture(
 
     listeners: tuple[HostTcpListener, ...] = ()
     windows_services: tuple[WindowsServiceProcessObservation, ...] = ()
+    firewall_context: WindowsFirewallContext | None = None
     docker_ports: tuple[DockerPublishedPort, ...] = ()
     listener_observed_at: float | None = None
     service_observed_at: float | None = None
@@ -200,6 +216,23 @@ def collect_service_exposure_capture(
         except Exception as exc:
             reports.append(_failure_report("windows_listener_services", exc))
 
+    if include_firewall:
+        try:
+            firewall_context = firewall_context_provider()
+            reports.append(
+                ServiceExposureCollectorReport(
+                    collector="windows_firewall_context",
+                    status=CollectorStatus.SUCCEEDED,
+                    record_count=(
+                        len(firewall_context.firewall_profiles)
+                        + len(firewall_context.network_profiles)
+                    ),
+                    observation_basis=WINDOWS_FIREWALL_CONTEXT_OBSERVATION_BASIS,
+                )
+            )
+        except Exception as exc:
+            reports.append(_failure_report("windows_firewall_context", exc))
+
     if include_docker:
         try:
             docker_ports = tuple(docker_provider())
@@ -232,6 +265,7 @@ def collect_service_exposure_capture(
         collector_reports=tuple(reports),
         windows_services=windows_services,
         service_observed_at=service_observed_at,
+        firewall_context=firewall_context,
     )
 
 
@@ -363,6 +397,14 @@ def service_exposure_capture_event_batch(
             for observation in capture.windows_services
         )
 
+    firewall_events: tuple[ObservationEvent, ...] = ()
+    if capture.firewall_context is not None:
+        firewall_events = windows_firewall_context_event_batch(
+            capture.firewall_context,
+            source=source,
+            stream_id=stream_id,
+        )
+
     docker_events: tuple[ObservationEvent, ...] = ()
     if capture.docker_ports:
         if capture.docker_observed_at is None:
@@ -380,6 +422,7 @@ def service_exposure_capture_event_batch(
     return (
         *listener_events,
         *service_events,
+        *firewall_events,
         *docker_events,
         service_exposure_manifest_event(capture, source=source, stream_id=stream_id),
     )
