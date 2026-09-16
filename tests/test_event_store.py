@@ -2,7 +2,9 @@ import math
 import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from agent_observatory.storage import (
     EVENT_STORE_SCHEMA_VERSION,
@@ -11,6 +13,16 @@ from agent_observatory.storage import (
     EventType,
     ObservationEvent,
 )
+
+
+@contextmanager
+def _sqlite_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    connection = sqlite3.connect(path)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 class EventStoreTests(unittest.TestCase):
@@ -38,7 +50,7 @@ class EventStoreTests(unittest.TestCase):
 
             self.assertEqual(store.journal_mode().casefold(), "wal")
 
-            with sqlite3.connect(path) as connection:
+            with _sqlite_connection(path) as connection:
                 version = connection.execute(
                     "SELECT value FROM event_store_meta WHERE key = 'schema_version'"
                 ).fetchone()[0]
@@ -136,21 +148,21 @@ class EventStoreTests(unittest.TestCase):
             store = EventStore(path)
             stored = store.append(self._event())
 
-            with sqlite3.connect(path) as connection:
+            with _sqlite_connection(path) as connection:
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
                         "UPDATE events SET source = ? WHERE event_id = ?",
                         ("mutated", stored.event_id),
                     )
 
-            with sqlite3.connect(path) as connection:
+            with _sqlite_connection(path) as connection:
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
                         "DELETE FROM events WHERE event_id = ?",
                         (stored.event_id,),
                     )
 
-            with sqlite3.connect(path) as connection:
+            with _sqlite_connection(path) as connection:
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
                         """
@@ -185,7 +197,7 @@ class EventStoreTests(unittest.TestCase):
             path = Path(temp_dir) / "events.sqlite3"
             EventStore(path)
 
-            with sqlite3.connect(path) as connection:
+            with _sqlite_connection(path) as connection:
                 connection.execute(
                     "UPDATE event_store_meta SET value = ? WHERE key = 'schema_version'",
                     ("999",),
@@ -199,7 +211,7 @@ class EventStoreTests(unittest.TestCase):
             path = Path(temp_dir) / "events.sqlite3"
             EventStore(path)
 
-            with sqlite3.connect(path) as connection:
+            with _sqlite_connection(path) as connection:
                 connection.execute("DROP TRIGGER events_reject_delete")
 
             with self.assertRaises(EventStoreSchemaError):
@@ -222,6 +234,17 @@ class EventStoreTests(unittest.TestCase):
 
             self.assertEqual(store.append_many(()), ())
             self.assertEqual(store.count_events(), 0)
+
+    def test_store_does_not_hold_database_handle_between_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "events.sqlite3"
+            store = EventStore(path)
+            store.append(self._event())
+            self.assertEqual(store.count_events(), 1)
+
+            path.unlink()
+
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":
