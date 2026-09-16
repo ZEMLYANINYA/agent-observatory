@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable
 
+from .models import ProcessSnapshot
 from .service_exposure import HostTcpListener, ListenerAttributionState
+from .windows_capture import WindowsCapture, same_process_instance
 from .windows_powershell import run_powershell_text
 
 
@@ -152,21 +154,55 @@ def collect_windows_services() -> tuple[WindowsServiceSnapshot, ...]:
     return parse_windows_service_inventory(_powershell_service_inventory())
 
 
+def service_processes_stable_across_inventory(
+    capture: WindowsCapture,
+    verification_processes: Iterable[ProcessSnapshot],
+) -> tuple[ProcessSnapshot, ...]:
+    """Return process instances that survive from capture-after through service inventory.
+
+    Live service attribution is intentionally stricter than PID matching. The
+    Win32_Service snapshot is collected after the listener bracket, followed by
+    a fresh process inventory. A process is eligible only when the process seen
+    at the end of the listener bracket is the same instance seen after the
+    service inventory.
+    """
+
+    verification_by_pid = {
+        process.pid: process
+        for process in verification_processes
+    }
+    stable: list[ProcessSnapshot] = []
+    for process in capture.processes_after:
+        verified = verification_by_pid.get(process.pid)
+        if verified is not None and same_process_instance(process, verified):
+            stable.append(process)
+    return tuple(stable)
+
+
 def service_observations_for_listeners(
     services: Iterable[WindowsServiceSnapshot],
     listeners: Iterable[HostTcpListener],
+    *,
+    verified_processes: Iterable[ProcessSnapshot] | None = None,
 ) -> tuple[WindowsServiceProcessObservation, ...]:
     """Retain all service records whose ProcessId owns at least one listener.
 
     A service receives a process-instance reference only when at least one
-    listener for the same PID carries bracket-validated process identity. If
-    several listeners share the PID, their attributed identity must agree.
-    Multiple services sharing one PID are all preserved.
+    listener for the same PID carries bracket-validated process identity. When
+    ``verified_processes`` is supplied, the listener process must also appear in
+    that post-service verified set with the same PID and creation time. Multiple
+    services sharing one PID are all preserved.
     """
 
     listeners_by_pid: dict[int, list[HostTcpListener]] = {}
     for listener in listeners:
         listeners_by_pid.setdefault(listener.owner_pid, []).append(listener)
+
+    verified_by_pid = (
+        None
+        if verified_processes is None
+        else {process.pid: process for process in verified_processes}
+    )
 
     observations: list[WindowsServiceProcessObservation] = []
     for service in services:
@@ -192,6 +228,25 @@ def service_observations_for_listeners(
             process_started_at, process_name, executable_path = next(iter(identities))
             assert process_started_at is not None
             assert process_name is not None
+
+            if verified_by_pid is not None:
+                verified = verified_by_pid.get(service.process_id)
+                if (
+                    verified is None
+                    or verified.started_at != process_started_at
+                ):
+                    observations.append(
+                        WindowsServiceProcessObservation(
+                            service=service,
+                            attribution_state=ServiceProcessAttributionState.UNRESOLVED,
+                            attribution_basis="pid_only_snapshot",
+                            attribution_reason=(
+                                "service_process_not_stable_across_post_service_snapshot"
+                            ),
+                        )
+                    )
+                    continue
+
             observations.append(
                 WindowsServiceProcessObservation(
                     service=service,
