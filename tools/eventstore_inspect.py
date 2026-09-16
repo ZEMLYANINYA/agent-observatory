@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        store = EventStore(args.db)
+        store = EventStore(args.db, read_only=True)
 
         if args.command == "list":
             return _print_stream_list(store)
@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 details=args.details,
             )
 
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         print(f"Inspection failed: {exc}", file=sys.stderr)
         return 1
 
