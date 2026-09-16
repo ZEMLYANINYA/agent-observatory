@@ -11,14 +11,22 @@ from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
     HostTcpListener,
     listeners_from_tcp_connections,
+    listeners_from_windows_capture,
 )
-from agent_observatory.endpoint.windows_network import collect_tcp_connections
+from agent_observatory.endpoint.windows_capture import (
+    WindowsCapture,
+    collect_windows_capture,
+)
 from agent_observatory.storage import EventStore, EventType, ObservationEvent, StoredEvent
 
 from .service_exposure_events import (
     docker_published_port_event,
     tcp_listener_event,
 )
+
+
+UNBRACKETED_LISTENER_OBSERVATION_BASIS = "windows_get_nettcpconnection_snapshot"
+BRACKETED_LISTENER_OBSERVATION_BASIS = "windows_bracketed_get_nettcpconnection_snapshot"
 
 
 class CollectorStatus(str, Enum):
@@ -92,15 +100,21 @@ def _failure_report(collector: str, exc: Exception) -> ServiceExposureCollectorR
 def collect_service_exposure_capture(
     *,
     include_docker: bool = True,
-    tcp_provider: Callable[[], Iterable[TcpConnection]] = collect_tcp_connections,
+    windows_capture_provider: Callable[[], WindowsCapture] = collect_windows_capture,
     docker_provider: Callable[[], Iterable[DockerPublishedPort]] = collect_docker_published_ports,
     clock: Callable[[], float] = time.time,
 ) -> ServiceExposureCapture:
-    """Collect independent host-listener and Docker-publication evidence.
+    """Collect bracket-attributed host listeners and Docker publication evidence.
+
+    The Windows collector reuses the existing process/TCP/process bracket so a
+    listener is bound to a process instance only when that owner is stable
+    across both process snapshots. Unstable owners remain listener facts with
+    unresolved attribution rather than being discarded.
 
     Collector failures are preserved in the manifest instead of being converted
-    into an empty successful observation. Successful collector outputs retain
-    separate observation anchors because the collectors are not simultaneous.
+    into an empty successful observation. Docker observations retain their own
+    time anchor because Docker inspection is not simultaneous with the Windows
+    bracketed capture.
     """
 
     listeners: tuple[HostTcpListener, ...] = ()
@@ -110,15 +124,15 @@ def collect_service_exposure_capture(
     reports: list[ServiceExposureCollectorReport] = []
 
     try:
-        tcp_connections = tuple(tcp_provider())
-        listeners = listeners_from_tcp_connections(tcp_connections)
-        listener_observed_at = float(clock())
+        windows_capture = windows_capture_provider()
+        listeners = listeners_from_windows_capture(windows_capture)
+        listener_observed_at = windows_capture.network_interval.finished_at
         reports.append(
             ServiceExposureCollectorReport(
                 collector="windows_tcp_listeners",
                 status=CollectorStatus.SUCCEEDED,
                 record_count=len(listeners),
-                observation_basis="windows_get_nettcpconnection_snapshot",
+                observation_basis=BRACKETED_LISTENER_OBSERVATION_BASIS,
             )
         )
     except Exception as exc:
@@ -199,9 +213,10 @@ def service_exposure_event_batch(
 ) -> tuple[ObservationEvent, ...]:
     """Build one deterministic batch from explicit successful observations.
 
-    This lower-level helper predates the live-capture manifest and represents
-    only supplied facts. Use ``service_exposure_capture_event_batch`` for live
-    collector runs where completeness must also be persisted.
+    This lower-level helper accepts an unbracketed TCP inventory and therefore
+    preserves PID-only listener ownership. Use
+    ``service_exposure_capture_event_batch`` for live collector runs where
+    bracket attribution and completeness must also be persisted.
     """
 
     if not isinstance(source, str) or not source.strip():
@@ -215,6 +230,7 @@ def service_exposure_event_batch(
             observed_at=tcp_observed_at,
             source=source,
             stream_id=stream_id,
+            observation_basis=UNBRACKETED_LISTENER_OBSERVATION_BASIS,
         )
         for listener in listeners_from_tcp_connections(tcp_connections)
     )
@@ -263,6 +279,7 @@ def service_exposure_capture_event_batch(
                 observed_at=capture.listener_observed_at,
                 source=source,
                 stream_id=stream_id,
+                observation_basis=BRACKETED_LISTENER_OBSERVATION_BASIS,
             )
             for listener in capture.listeners
         )
