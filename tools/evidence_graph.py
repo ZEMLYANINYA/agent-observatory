@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        store = EventStore(args.db)
+        store = EventStore(args.db, read_only=True)
         stream_id = _resolve_stream_id(store, args.stream_id)
         graph = project_stream(store, stream_id)
     except (KeyError, OSError, ValueError, RuntimeError) as exc:
