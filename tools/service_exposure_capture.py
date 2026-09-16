@@ -45,6 +45,9 @@ def capture_into_store(
     include_docker: bool = True,
     capture_provider: Callable[..., ServiceExposureCapture] = _collect_live_service_exposure_capture,
 ) -> tuple[ServiceExposureCapture, tuple[StoredEvent, ...]]:
+    if store.stream_exists(stream_id):
+        raise ValueError(f"stream already exists: {stream_id}")
+
     capture = capture_provider(include_docker=include_docker)
     appended = append_service_exposure_capture(
         store,
