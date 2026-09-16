@@ -29,6 +29,10 @@ from .windows_capture_events import (
     append_windows_capture,
     windows_capture_event_batch,
 )
+from .windows_firewall_events import (
+    windows_firewall_profile_event,
+    windows_network_profile_event,
+)
 
 __all__ = [
     "ApplicationDiscoveryOutcome",
@@ -53,5 +57,7 @@ __all__ = [
     "tcp_connection_event",
     "tcp_listener_event",
     "windows_capture_event_batch",
+    "windows_firewall_profile_event",
+    "windows_network_profile_event",
     "windows_service_event",
 ]
