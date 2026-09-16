@@ -2,9 +2,11 @@ import unittest
 
 from agent_observatory.endpoint.models import (
     ProcessSnapshot,
+    RelationBasis,
     RelationState,
 )
 from agent_observatory.endpoint.process_tree import (
+    build_capture_parent_relations,
     build_validated_process_tree,
     validate_parent_relation,
 )
@@ -29,6 +31,7 @@ class ParentRelationTests(unittest.TestCase):
         relation = validate_parent_relation(parent, child)
 
         self.assertEqual(relation.state, RelationState.VALID)
+        self.assertEqual(relation.basis, RelationBasis.CURRENT_SNAPSHOT)
         self.assertIsNone(relation.reason)
 
     def test_rejects_pid_reuse_when_child_predates_parent(self) -> None:
@@ -79,6 +82,116 @@ class ParentRelationTests(unittest.TestCase):
 
         self.assertEqual(relation.state, RelationState.INVALID)
         self.assertEqual(relation.reason, "ppid_mismatch")
+
+
+class CaptureParentRelationTests(unittest.TestCase):
+    def test_preserves_dead_parent_observed_before(self) -> None:
+        parent_before = ProcessSnapshot(
+            pid=100,
+            ppid=10,
+            name="agent.exe",
+            started_at=100.0,
+        )
+        child_before = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="powershell.exe",
+            started_at=101.0,
+        )
+        child_after = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="powershell.exe",
+            started_at=101.0,
+        )
+
+        relations = build_capture_parent_relations(
+            (parent_before, child_before),
+            (child_after,),
+        )
+
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0].state, RelationState.VALID)
+        self.assertEqual(
+            relations[0].basis,
+            RelationBasis.PARENT_OBSERVED_BEFORE_ONLY,
+        )
+        self.assertIsNone(relations[0].reason)
+
+    def test_unobserved_parent_is_explicit_unknown(self) -> None:
+        child_after = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="powershell.exe",
+            started_at=101.0,
+        )
+
+        relations = build_capture_parent_relations((), (child_after,))
+
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0].state, RelationState.UNKNOWN)
+        self.assertEqual(relations[0].basis, RelationBasis.REPORTED_PPID_ONLY)
+        self.assertEqual(relations[0].reason, "parent_not_observed")
+
+    def test_dead_parent_is_not_attached_to_reused_child_pid(self) -> None:
+        parent_before = ProcessSnapshot(
+            pid=100,
+            ppid=10,
+            name="agent.exe",
+            started_at=100.0,
+        )
+        old_child = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="powershell.exe",
+            started_at=101.0,
+            command_line="old",
+        )
+        new_child = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="powershell.exe",
+            started_at=200.0,
+            command_line="new",
+        )
+
+        relations = build_capture_parent_relations(
+            (parent_before, old_child),
+            (new_child,),
+        )
+
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0].state, RelationState.UNKNOWN)
+        self.assertEqual(relations[0].basis, RelationBasis.REPORTED_PPID_ONLY)
+        self.assertEqual(
+            relations[0].reason,
+            "child_pid_reused_across_capture",
+        )
+
+    def test_reused_current_parent_is_rejected(self) -> None:
+        current_parent = ProcessSnapshot(
+            pid=100,
+            ppid=1,
+            name="new.exe",
+            started_at=300.0,
+        )
+        old_child = ProcessSnapshot(
+            pid=200,
+            ppid=100,
+            name="child.exe",
+            started_at=200.0,
+        )
+
+        relations = build_capture_parent_relations(
+            (),
+            (current_parent, old_child),
+        )
+        relation = next(
+            item for item in relations if item.child_pid == 200
+        )
+
+        self.assertEqual(relation.state, RelationState.INVALID)
+        self.assertEqual(relation.reason, "parent_pid_reused")
 
 
 class ProcessTreeTests(unittest.TestCase):
