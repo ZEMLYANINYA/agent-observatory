@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Iterable
 
 from .network import TcpConnection
+from .windows_capture import WindowsCapture, stable_processes
 
 
 class BindScope(str, Enum):
@@ -15,6 +16,11 @@ class BindScope(str, Enum):
     WILDCARD = "wildcard"
     SPECIFIC = "specific"
     UNKNOWN = "unknown"
+
+
+class ListenerAttributionState(str, Enum):
+    ATTRIBUTED = "attributed"
+    UNRESOLVED = "unresolved"
 
 
 def classify_bind_scope(address: str) -> BindScope:
@@ -38,17 +44,18 @@ def classify_bind_scope(address: str) -> BindScope:
 
 @dataclass(frozen=True, slots=True)
 class HostTcpListener:
-    """One point-in-time TCP listener observation owned by a PID snapshot.
-
-    ``owner_pid`` is not treated as a stable process identity. A later bracketed
-    collector may bind the listener to ``PID + started_at`` evidence.
-    """
+    """One point-in-time TCP listener with explicit owner-attribution quality."""
 
     owner_pid: int
     local_address: str
     local_port: int
     state: str = "Listen"
     owner_identity_basis: str = "pid_only_snapshot"
+    attribution_state: ListenerAttributionState = ListenerAttributionState.UNRESOLVED
+    process_started_at: float | None = None
+    process_name: str | None = None
+    executable_path: str | None = None
+    attribution_reason: str | None = "process_instance_not_bracket_validated"
 
     def __post_init__(self) -> None:
         if isinstance(self.owner_pid, bool) or not isinstance(self.owner_pid, int):
@@ -65,6 +72,19 @@ class HostTcpListener:
             raise ValueError("state must be a non-empty string")
         if not isinstance(self.owner_identity_basis, str) or not self.owner_identity_basis.strip():
             raise ValueError("owner_identity_basis must be a non-empty string")
+        if not isinstance(self.attribution_state, ListenerAttributionState):
+            raise TypeError("attribution_state must be ListenerAttributionState")
+        if self.attribution_state is ListenerAttributionState.ATTRIBUTED:
+            if self.process_started_at is None:
+                raise ValueError("attributed listener requires process_started_at")
+            if not self.process_name:
+                raise ValueError("attributed listener requires process_name")
+            if self.owner_identity_basis != "stable_process_instance":
+                raise ValueError("attributed listener requires stable_process_instance basis")
+            if self.attribution_reason is not None:
+                raise ValueError("attributed listener must not carry attribution_reason")
+        elif self.process_started_at is not None:
+            raise ValueError("unresolved listener must not carry process_started_at")
 
     @property
     def protocol(self) -> str:
@@ -74,11 +94,18 @@ class HostTcpListener:
     def bind_scope(self) -> BindScope:
         return classify_bind_scope(self.local_address)
 
+    @property
+    def process_ref(self) -> dict[str, object] | None:
+        if self.attribution_state is not ListenerAttributionState.ATTRIBUTED:
+            return None
+        assert self.process_started_at is not None
+        return {"pid": self.owner_pid, "started_at": self.process_started_at}
+
 
 def listeners_from_tcp_connections(
     connections: Iterable[TcpConnection],
 ) -> tuple[HostTcpListener, ...]:
-    """Project listening sockets from the existing Windows TCP inventory."""
+    """Project listening sockets from an unbracketed TCP inventory."""
 
     listeners = [
         HostTcpListener(
@@ -90,6 +117,55 @@ def listeners_from_tcp_connections(
         for connection in connections
         if connection.is_listening
     ]
+    return tuple(
+        sorted(
+            listeners,
+            key=lambda item: (
+                item.local_address,
+                item.local_port,
+                item.owner_pid,
+                item.state.casefold(),
+            ),
+        )
+    )
+
+
+def listeners_from_windows_capture(capture: WindowsCapture) -> tuple[HostTcpListener, ...]:
+    """Project listeners and attribute only bracket-stable process instances."""
+
+    stable_by_pid = {process.pid: process for process in stable_processes(capture)}
+    listeners: list[HostTcpListener] = []
+
+    for connection in capture.tcp_connections:
+        if not connection.is_listening:
+            continue
+        process = stable_by_pid.get(connection.pid)
+        if process is None:
+            listeners.append(
+                HostTcpListener(
+                    owner_pid=connection.pid,
+                    local_address=connection.local_address,
+                    local_port=connection.local_port,
+                    state=connection.state,
+                    attribution_reason="owner_pid_not_stable_across_process_bracket",
+                )
+            )
+            continue
+        listeners.append(
+            HostTcpListener(
+                owner_pid=connection.pid,
+                local_address=connection.local_address,
+                local_port=connection.local_port,
+                state=connection.state,
+                owner_identity_basis="stable_process_instance",
+                attribution_state=ListenerAttributionState.ATTRIBUTED,
+                process_started_at=process.started_at,
+                process_name=process.name,
+                executable_path=process.executable_path,
+                attribution_reason=None,
+            )
+        )
+
     return tuple(
         sorted(
             listeners,
