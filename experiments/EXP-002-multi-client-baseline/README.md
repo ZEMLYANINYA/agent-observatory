@@ -1,22 +1,34 @@
 # EXP-002 — Multi-Client Desktop Baseline
 
+## Status
+
+**Controlled baseline complete.**
+
+The experiment now contains controlled or supporting observations for Claude,
+Codex, Gemini, Manus, Perplexity, and five-client co-residency.
+
+The final comparative interpretation is in [`FINAL_FINDINGS.md`](FINAL_FINDINGS.md).
+Chronological notes and special-case runs remain in this experiment directory as
+the supporting evidence trail.
+
 ## Objective
 
 Establish a comparative behavioral baseline for multiple desktop AI clients on
 a live Windows workstation using Agent Observatory's current process identity,
 application discovery, process-tree, and TCP attribution layers.
 
-The experiment is intended to answer four questions:
+The experiment asks four questions:
 
 1. Which process instances and executable identities are stable for each client?
-2. Which process roles appear only during startup, active use, or post-action idle?
-3. Which process instances actually own observed TCP connections?
-4. Which native/helper processes participate in behavior outside the Electron
-   network service?
+2. Which process roles appear during startup, active use, or post-action idle?
+3. Which process instances own observed TCP records and what states are those
+   records in?
+4. Which native/helper processes participate outside the ordinary Electron role
+   taxonomy?
 
 ## Applications
 
-The first controlled pass covers clients already observed on the workstation:
+The controlled pass covers clients directly observed on the workstation:
 
 - Claude
 - Codex
@@ -44,7 +56,8 @@ For each application state, record:
   - hash observation timestamp;
   - process-observation-to-hash timing gap;
 - exact command-line identity hash;
-- established TCP ownership by process instance;
+- TCP ownership by validated process instance;
+- TCP state for every returned record;
 - local and remote socket endpoints;
 - helper/native processes that remain role `unknown`;
 - capture timing and attribution-guard output.
@@ -69,7 +82,7 @@ preferred over a guessed role.
 
 ## Evidence Schema
 
-Single-capture evidence currently uses `schema_version: 2`.
+Single-capture evidence uses `schema_version: 2`.
 
 The executable object has the following shape:
 
@@ -93,25 +106,63 @@ The executable object has the following shape:
 Hash states remain explicit rather than inferring success from the presence or
 absence of a digest.
 
-Transition-query sessions use `schema_version: 3` and declare
+Transition-query sessions use `schema_version: 4` and declare
 `embedded_evidence_schema_version: 2` because every timed observation embeds a
 single-capture evidence document.
 
+Transition observations also record scheduler evidence:
+
+```text
+schedule_slot
+scheduled_t_relative_ms
+schedule_lag_ms
+capture_duration_ms
+```
+
+The requested `--interval` is a target start-to-start cadence. If a capture takes
+longer than the requested interval, missed schedule slots are skipped rather than
+silently adding another full interval after capture completion.
+
+## TCP summary semantics
+
+Raw evidence preserves every returned TCP record and its state.
+
+The cleanup console summary reports:
+
+```text
+tcp_total
+established
+bound
+other
+```
+
+`tcp_total` is the total number of attributed TCP records in the snapshot. It is
+**not** the number of established remote connections. The legacy
+`summary["tcp_count"]` field remains in transition JSON as a backward-compatible
+total while explicit state-count fields are added alongside it.
+
+A stable TCP-record count does not imply no network traffic. Existing connections
+can carry traffic without changing the number of observed socket records.
+
+The current EXP-002 sensor does not observe UDP or complete flow lifetimes.
+
 ## States
 
-Each client is observed in the following controlled states:
+Each client is observed where practical in the following controlled states:
 
 1. **STARTUP** — capture shortly after a clean launch.
 2. **IDLE** — application open and left untouched long enough for startup churn
    to settle.
-3. **ACTIVE_QUERY** — capture immediately after sending one benign text query.
-4. **POST_ACTION_IDLE** — capture after the query has completed and the client
-   has returned to an idle state.
+3. **ACTIVE_QUERY** — timed observations after one benign text query.
+4. **POST_ACTION_IDLE** — observations after the visible response completes.
 
-The primary per-client pass should run with only the target client intentionally
-active where practical. A final co-residency pass may run all observed clients
-simultaneously to verify discovery separation and process/TCP attribution under
-contention.
+The primary per-client pass runs with only the target client intentionally active
+where practical. A co-residency pass runs all observed clients simultaneously to
+verify discovery separation and process/TCP attribution under contention.
+
+`RESPONSE_COMPLETE` in the transition protocol is an operator-observed UI marker.
+It is not proof that the application, network stack, or remote service has become
+idle.
 
 ## Method
 
@@ -120,60 +171,83 @@ For each client:
 1. close the target application and confirm its process tree has terminated;
 2. launch the application normally;
 3. capture STARTUP evidence;
-4. wait for the application to become idle and capture IDLE evidence;
+4. wait for startup churn to settle and capture IDLE evidence;
 5. submit one benign query that does not invoke external tools or file access;
-6. capture ACTIVE_QUERY evidence while the request is active or immediately
-   after transmission;
-7. after completion and a short quiet period, capture POST_ACTION_IDLE evidence;
-8. preserve the raw observation output before drawing conclusions.
+6. run the timed transition capture while the answer is produced;
+7. mark visible response completion without inferring transport-level idle;
+8. allow the scheduled post-response observations to complete;
+9. preserve the raw observation output before drawing conclusions.
 
-The same capture commands and observation format should be used across clients.
+Special cases such as multi-query stress runs, network-interface transitions, or
+UI-completion ambiguity are retained separately and are not silently merged into
+the clean single-query baseline.
 
-## Preliminary Validation
+## Validation
 
-Before the controlled experiment, a live multi-client smoke test successfully
-identified Claude, Codex, Gemini, Manus, and Perplexity at the same time.
+A hardened live co-residency validation observed all five configured desktop AI
+clients simultaneously:
 
-A later co-residency validation after executable-identity hardening observed 51
-AI processes across those five applications. All 51 received executable hash
-evidence, with zero non-hashed states and zero TCP connections rejected by the
-PID-stability attribution guard.
+```text
+Claude       8 processes
+Codex       16 processes
+Gemini      10 processes
+Manus        7 processes
+Perplexity  10 processes
+```
 
-That validation also exposed and fixed a PowerShell stdout encoding issue that
+Global result:
+
+```text
+AI applications       5
+AI processes          51
+hash evidence         51 / 51
+non-HASHED states     0
+guard-rejected TCP    0
+```
+
+This validation also exposed and fixed a PowerShell stdout encoding issue that
 corrupted non-ASCII paths under a Windows user profile. Evidence transport now
 forces UTF-8 and preserves paths such as `C:\Users\САНТЕР\...` without silent
 replacement characters.
 
-The smoke tests also showed that network ownership is not limited to Chromium's
-`network.mojom.NetworkService`. Native/helper processes such as `codex.exe`,
-`manus-computer-operator.exe`, and `perplexity-rpc-server.exe` were observed as
-separate process-tree members, with some owning established TCP connections.
+The experiment additionally exposed:
 
-These preliminary observations are hypotheses to reproduce under controlled
-states, not final experiment conclusions.
+- capture-limited scheduler cadence;
+- ambiguous aggregate TCP presentation;
+- launch-time discovery ambiguity;
+- UI-visible completion that does not necessarily coincide with network idle;
+- the need to preserve network state as evidence rather than collapse it into a
+  single count.
 
-## Expected Result
+These findings are documented in `FINAL_FINDINGS.md`.
 
-Agent Observatory should:
+## Discovery ambiguity
 
-- distinguish all configured applications without cross-identifying Codex as
-  ChatGPT despite the shared `ChatGPT.exe` executable name;
-- maintain stable process-instance attribution across the bracketing capture;
-- preserve one executable identity for processes launched from the same binary
-  while distinguishing concrete process instances by launch identity;
-- keep executable path, filesystem identity, and hash observation as distinct
-  evidence concepts;
-- expose the timing gap between process capture and executable hashing;
-- attribute established TCP connections only to validated process instances;
-- expose helper/native processes without guessing unsupported semantic roles.
+Application discovery is point-in-time evidence.
+
+During EXP-002, very-early startup produced both `not discovered` and
+`multiple candidate roots` edge cases on different clients. Future multiple-root
+errors include candidate PID, PPID, start time, and executable path so the
+ambiguity can be inspected instead of reduced to a generic failure.
+
+Future persistence should preserve absent, unique, and ambiguous discovery
+outcomes as distinct observations.
 
 ## Safety
 
 The experiment is observational and local-first.
 
-Queries used during ACTIVE_QUERY should be benign and should not request file
+Queries used during ACTIVE_QUERY are benign and do not request file
 modification, shell execution, credential access, network scanning, exploitation,
 or other privileged actions.
 
 No TLS interception, credential capture, security-control bypass, or application
 modification is required.
+
+## Next milestone
+
+After the final cleanup test gate, EXP-002 is closed.
+
+The next architecture milestone is SQLite + WAL append-only EventStore v1. The
+EventStore should preserve observations first and leave relationships, drift,
+Evidence Graph projections, and analysis as derived layers.
