@@ -333,11 +333,32 @@ def _capture_summary(evidence: dict[str, object]) -> dict[str, int]:
     }
 
 
+def _next_schedule_slot(
+    origin_ns: int,
+    interval_ns: int,
+    completed_slot: int,
+    now_ns: int,
+) -> int:
+    """Return the next future-or-current schedule slot without adding extra delay."""
+
+    slot = completed_slot + 1
+    scheduled_ns = origin_ns + slot * interval_ns
+
+    if scheduled_ns < now_ns:
+        late_ns = now_ns - scheduled_ns
+        slot += (late_ns + interval_ns - 1) // interval_ns
+
+    return slot
+
+
 def _transition_observation(
     target: str,
     phase: str,
     sequence: int,
     query_origin_ns: int | None,
+    *,
+    scheduled_ns: int | None = None,
+    schedule_slot: int | None = None,
 ) -> dict[str, object]:
     started_ns = time.monotonic_ns()
     observation: dict[str, object] = {
@@ -346,6 +367,18 @@ def _transition_observation(
         "observed_at": _utc_now_iso(),
         "monotonic_ns": started_ns,
         "t_relative_ms": _relative_ms(query_origin_ns, started_ns),
+        "schedule_slot": schedule_slot,
+        "scheduled_monotonic_ns": scheduled_ns,
+        "scheduled_t_relative_ms": (
+            _relative_ms(query_origin_ns, scheduled_ns)
+            if scheduled_ns is not None
+            else None
+        ),
+        "schedule_lag_ms": (
+            round(max(0, started_ns - scheduled_ns) / 1_000_000, 3)
+            if scheduled_ns is not None
+            else None
+        ),
     }
 
     try:
@@ -355,6 +388,10 @@ def _transition_observation(
             {
                 "status": "discovery_empty",
                 "error": str(exc),
+                "capture_duration_ms": round(
+                    (time.monotonic_ns() - started_ns) / 1_000_000,
+                    3,
+                ),
             }
         )
         return observation
@@ -363,6 +400,10 @@ def _transition_observation(
             {
                 "status": "capture_error",
                 "error": f"{type(exc).__name__}: {exc}",
+                "capture_duration_ms": round(
+                    (time.monotonic_ns() - started_ns) / 1_000_000,
+                    3,
+                ),
             }
         )
         return observation
@@ -372,6 +413,10 @@ def _transition_observation(
             "status": "ok",
             "summary": _capture_summary(evidence),
             "evidence": evidence,
+            "capture_duration_ms": round(
+                (time.monotonic_ns() - started_ns) / 1_000_000,
+                3,
+            ),
         }
     )
     return observation
@@ -382,9 +427,15 @@ def _print_transition_observation(observation: dict[str, object]) -> None:
     relative_text = "pre-query" if relative is None else f"{relative / 1000:+.3f}s"
     phase = observation["phase"]
     status = observation["status"]
+    duration_text = f" capture={observation['capture_duration_ms']:.0f}ms"
+    lag = observation.get("schedule_lag_ms")
+    lag_text = f" lag={lag:.0f}ms" if lag is not None else ""
 
     if status != "ok":
-        print(f"{relative_text:>12}  {phase:<20} {status}: {observation['error']}")
+        print(
+            f"{relative_text:>12}  {phase:<20} {status}: "
+            f"{observation['error']}{duration_text}{lag_text}"
+        )
         return
 
     summary = observation["summary"]
@@ -395,6 +446,7 @@ def _print_transition_observation(observation: dict[str, object]) -> None:
         f"unknown={summary['unknown_count']} "
         f"non_hashed={summary['non_hashed_count']} "
         f"guard_rejected={summary['guard_rejected_tcp_count']}"
+        f"{duration_text}{lag_text}"
     )
 
 
@@ -405,6 +457,8 @@ def _append_observation(
     target: str,
     phase: str,
     query_origin_ns: int | None,
+    scheduled_ns: int | None = None,
+    schedule_slot: int | None = None,
 ) -> None:
     observations = session["observations"]
     observation = _transition_observation(
@@ -412,6 +466,8 @@ def _append_observation(
         phase,
         len(observations) + 1,
         query_origin_ns,
+        scheduled_ns=scheduled_ns,
+        schedule_slot=schedule_slot,
     )
     observations.append(observation)
     _persist_transition(path, session)
@@ -457,7 +513,7 @@ def run_transition_query(
     session_started_ns = time.monotonic_ns()
     path = _session_path(target)
     session: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "experiment": "EXP-002",
         "mode": "transition_query",
         "target": target,
@@ -466,13 +522,20 @@ def run_transition_query(
         "embedded_evidence_schema_version": 2,
         "capture_policy": {
             "burst_interval_seconds": interval_seconds,
+            "burst_interval_semantics": (
+                "Target start-to-start cadence. If one capture overruns one or "
+                "more schedule slots, missed slots are skipped rather than adding "
+                "an extra full interval after capture completion."
+            ),
             "post_response_delays_seconds": list(post_delays_seconds),
             "operator_events": [
                 "QUERY_SENT",
                 "RESPONSE_COMPLETE",
             ],
             "semantic_note": (
-                "Operator events are markers, not proof of server-side inference state."
+                "Operator events are markers, not proof of server-side inference state. "
+                "Actual capture start, schedule lag, and capture duration are recorded "
+                "per observation."
             ),
         },
         "events": [],
@@ -509,7 +572,8 @@ def run_transition_query(
 
     print()
     print(
-        f"Automatic capture started every {interval_seconds:g}s. "
+        f"Automatic capture target cadence: {interval_seconds:g}s start-to-start. "
+        "Actual starts may be capture-limited; missed schedule slots are skipped. "
         "Press ENTER when the response is visibly complete."
     )
 
@@ -526,12 +590,13 @@ def run_transition_query(
     )
     input_thread.start()
 
-    next_capture_ns = query_origin_ns
+    schedule_slot = 0
     interval_ns = max(1, int(interval_seconds * 1_000_000_000))
 
     try:
         while not response_complete.is_set():
-            _wait_until_monotonic(next_capture_ns)
+            scheduled_ns = query_origin_ns + schedule_slot * interval_ns
+            _wait_until_monotonic(scheduled_ns)
             if response_complete.is_set():
                 break
 
@@ -541,12 +606,16 @@ def run_transition_query(
                 target=target,
                 phase="QUERY_WINDOW",
                 query_origin_ns=query_origin_ns,
+                scheduled_ns=scheduled_ns,
+                schedule_slot=schedule_slot,
             )
-            next_capture_ns += interval_ns
 
-            now_ns = time.monotonic_ns()
-            if next_capture_ns <= now_ns:
-                next_capture_ns = now_ns + interval_ns
+            schedule_slot = _next_schedule_slot(
+                query_origin_ns,
+                interval_ns,
+                schedule_slot,
+                time.monotonic_ns(),
+            )
 
         response_complete_ns = time.monotonic_ns()
         _append_event(
@@ -570,6 +639,7 @@ def run_transition_query(
                 target=target,
                 phase=phase,
                 query_origin_ns=query_origin_ns,
+                scheduled_ns=scheduled_ns,
             )
 
     except KeyboardInterrupt:
@@ -670,7 +740,8 @@ def main() -> int:
         type=float,
         default=DEFAULT_BURST_INTERVAL_SECONDS,
         help=(
-            "Seconds between automatic query-window captures "
+            "Target start-to-start seconds between query-window captures; "
+            "actual cadence may be capture-limited "
             f"(default: {DEFAULT_BURST_INTERVAL_SECONDS:g})."
         ),
     )
