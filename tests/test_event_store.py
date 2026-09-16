@@ -130,7 +130,7 @@ class EventStoreTests(unittest.TestCase):
 
             self.assertEqual(store.count_events(), 0)
 
-    def test_database_triggers_reject_update_and_delete(self) -> None:
+    def test_database_triggers_reject_update_delete_and_replace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "events.sqlite3"
             store = EventStore(path)
@@ -148,6 +148,33 @@ class EventStoreTests(unittest.TestCase):
                     connection.execute(
                         "DELETE FROM events WHERE event_id = ?",
                         (stored.event_id,),
+                    )
+
+            with sqlite3.connect(path) as connection:
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT OR REPLACE INTO events(
+                            event_id,
+                            event_type,
+                            event_version,
+                            observed_at,
+                            recorded_at,
+                            source,
+                            stream_id,
+                            payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            stored.event_id,
+                            EventType.PROCESS_OBSERVED.value,
+                            1,
+                            1_700_000_001.0,
+                            1_700_000_002.0,
+                            "replacement",
+                            "capture-001",
+                            '{"pid":999}',
+                        ),
                     )
 
             self.assertEqual(store.count_events(), 1)
