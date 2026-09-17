@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        store = EventStore(args.db)
+        store = EventStore(args.db, read_only=True)
         stream_id = _resolve_stream_id(store, args.stream_id)
         correlation = correlate_firewall_rule_candidates(store, stream_id)
     except Exception as exc:
@@ -112,7 +112,10 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("SEMANTICS:")
     print("  candidate rules are source-compatible possibilities, not effective firewall verdicts")
-    print("  AMBIGUOUS may mean multiple candidate rules or unresolved rule dimensions")
+    print(
+        "  AMBIGUOUS may mean multiple candidates, unresolved rule dimensions, "
+        "or an unavailable/incomplete firewall-rule inventory"
+    )
     print("  NO_CANDIDATE does not prove remote unreachability")
     print("  no authentication or exploitability is inferred")
     return 0
