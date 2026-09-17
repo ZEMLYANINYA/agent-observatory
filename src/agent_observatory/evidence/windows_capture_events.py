@@ -17,7 +17,10 @@ from agent_observatory.endpoint.windows_capture import (
     attributable_tcp_connections,
     stable_processes,
 )
-from agent_observatory.endpoint.windows_snapshot import collect_application_snapshots
+from agent_observatory.endpoint.windows_snapshot import (
+    collect_application_snapshots,
+    filter_application_snapshots_by_process_instances,
+)
 from agent_observatory.storage import EventStore, ObservationEvent, StoredEvent
 
 from .endpoint_events import (
@@ -98,8 +101,11 @@ def _selected_processes(
     capture: WindowsCapture,
     application_names: tuple[str, ...],
 ) -> tuple[ProcessSnapshot, ...]:
-    stable = stable_processes(capture)
-    snapshots = collect_application_snapshots(stable)
+    observed_snapshots = collect_application_snapshots(capture.processes_before)
+    snapshots = filter_application_snapshots_by_process_instances(
+        observed_snapshots,
+        stable_processes(capture),
+    )
     allowed = {name.casefold() for name in application_names}
 
     by_pid: dict[int, ProcessSnapshot] = {}
@@ -154,10 +160,11 @@ def windows_capture_event_batch(
 ) -> tuple[ObservationEvent, ...]:
     """Adapt one bracketed Windows capture into one deterministic evidence batch.
 
-    Only processes belonging to the requested configured application trees are
-    emitted. TCP records are emitted only when the capture attribution guard
-    validated their owning process instance as stable across the before/after
-    process inventories.
+    Application membership is derived from the complete pre-capture process
+    tree. Process, executable, and TCP evidence is emitted only for process
+    instances validated as stable across the bracketing capture. This preserves
+    stable descendants even when an intermediate ancestor exits between the
+    before/after process inventories.
 
     The returned tuple is ready for one atomic ``EventStore.append_many`` call.
     ``event_id`` order reflects deterministic serialization order only and must
