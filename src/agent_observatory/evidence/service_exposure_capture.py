@@ -11,12 +11,14 @@ from agent_observatory.endpoint.network import TcpConnection
 from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
     HostTcpListener,
+    ListenerAttributionState,
     listeners_from_tcp_connections,
     listeners_from_windows_capture,
 )
 from agent_observatory.endpoint.windows_capture import (
     WindowsCapture,
     collect_windows_capture,
+    stable_processes,
 )
 from agent_observatory.endpoint.windows_firewall import (
     WindowsFirewallContext,
@@ -25,6 +27,12 @@ from agent_observatory.endpoint.windows_firewall import (
 from agent_observatory.endpoint.windows_firewall_rules import (
     WindowsFirewallRuleInventory,
     collect_windows_firewall_rule_inventory,
+)
+from agent_observatory.endpoint.windows_process_principals import (
+    WindowsProcessPrincipalObservation,
+    WindowsProcessPrincipalSnapshot,
+    collect_windows_process_principals,
+    principal_observations_for_processes,
 )
 from agent_observatory.endpoint.windows_services import (
     WindowsServiceProcessObservation,
@@ -39,6 +47,7 @@ from agent_observatory.storage import EventStore, EventType, ObservationEvent, S
 from .service_exposure_events import (
     docker_published_port_event,
     tcp_listener_event,
+    windows_process_principal_event,
     windows_service_event,
 )
 from .windows_firewall_events import windows_firewall_context_event_batch
@@ -47,6 +56,10 @@ from .windows_firewall_rule_events import windows_firewall_rule_event_batch
 
 UNBRACKETED_LISTENER_OBSERVATION_BASIS = "windows_get_nettcpconnection_snapshot"
 BRACKETED_LISTENER_OBSERVATION_BASIS = "windows_bracketed_get_nettcpconnection_snapshot"
+WINDOWS_PROCESS_PRINCIPAL_OBSERVATION_BASIS = (
+    "windows_cim_win32_process_getownersid; "
+    "process_verified_after_principal_query"
+)
 WINDOWS_SERVICE_OBSERVATION_BASIS = (
     "windows_cim_win32_service_running_snapshot; "
     "process_verified_after_service_inventory"
@@ -108,6 +121,8 @@ class ServiceExposureCapture:
     docker_observed_at: float | None
     manifest_observed_at: float
     collector_reports: tuple[ServiceExposureCollectorReport, ...]
+    windows_process_principals: tuple[WindowsProcessPrincipalObservation, ...] = ()
+    principal_observed_at: float | None = None
     windows_services: tuple[WindowsServiceProcessObservation, ...] = ()
     service_observed_at: float | None = None
     firewall_context: WindowsFirewallContext | None = None
@@ -136,20 +151,26 @@ def collect_service_exposure_capture(
     include_docker: bool = True,
     include_firewall: bool = False,
     include_firewall_rules: bool = False,
+    include_process_principals: bool = False,
     windows_capture_provider: Callable[[], WindowsCapture] = collect_windows_capture,
     windows_service_provider: Callable[[], Iterable[WindowsServiceSnapshot]] = collect_windows_services,
     process_verification_provider: Callable[[], Iterable[ProcessSnapshot]] = collect_processes,
+    process_principal_provider: Callable[
+        [Iterable[int]], Iterable[WindowsProcessPrincipalSnapshot]
+    ] = collect_windows_process_principals,
     firewall_context_provider: Callable[[], WindowsFirewallContext] = collect_windows_firewall_context,
     firewall_rule_provider: Callable[[], WindowsFirewallRuleInventory] = collect_windows_firewall_rule_inventory,
     docker_provider: Callable[[], Iterable[DockerPublishedPort]] = collect_docker_published_ports,
     clock: Callable[[], float] = time.time,
 ) -> ServiceExposureCapture:
-    """Collect listener, service, firewall, rule, and Docker publication evidence.
+    """Collect listener, principal, service, firewall, and Docker evidence.
 
-    Listener ownership reuses the existing process/TCP/process bracket. Running
-    Win32_Service records are collected only after listener collection succeeds,
-    then a fresh process inventory verifies that a service PID still represents
-    the same process instance across the service snapshot.
+    Listener ownership reuses the existing process/TCP/process bracket. Optional
+    principal collection calls Win32_Process.GetOwnerSid only for bracket-stable
+    listener process instances and then verifies those process instances again.
+
+    Running Win32_Service records are collected only after listener collection
+    succeeds, followed by their own fresh process verification snapshot.
 
     Firewall context and inbound ActiveStore rule inventory are independent
     evidence sources. Neither decides whether any particular listener is
@@ -161,11 +182,13 @@ def collect_service_exposure_capture(
     """
 
     listeners: tuple[HostTcpListener, ...] = ()
+    windows_process_principals: tuple[WindowsProcessPrincipalObservation, ...] = ()
     windows_services: tuple[WindowsServiceProcessObservation, ...] = ()
     firewall_context: WindowsFirewallContext | None = None
     firewall_rule_inventory: WindowsFirewallRuleInventory | None = None
     docker_ports: tuple[DockerPublishedPort, ...] = ()
     listener_observed_at: float | None = None
+    principal_observed_at: float | None = None
     service_observed_at: float | None = None
     docker_observed_at: float | None = None
     reports: list[ServiceExposureCollectorReport] = []
@@ -185,6 +208,69 @@ def collect_service_exposure_capture(
         )
     except Exception as exc:
         reports.append(_failure_report("windows_tcp_listeners", exc))
+
+    if include_process_principals:
+        if windows_capture is None or not listeners:
+            reports.append(
+                ServiceExposureCollectorReport(
+                    collector="windows_listener_process_principals",
+                    status=CollectorStatus.SKIPPED,
+                    record_count=None,
+                )
+            )
+        else:
+            stable_by_pid = {
+                process.pid: process
+                for process in stable_processes(windows_capture)
+            }
+            target_processes = tuple(
+                stable_by_pid[pid]
+                for pid in sorted(
+                    {
+                        listener.owner_pid
+                        for listener in listeners
+                        if listener.attribution_state is ListenerAttributionState.ATTRIBUTED
+                    }
+                )
+                if pid in stable_by_pid
+            )
+            if not target_processes:
+                reports.append(
+                    ServiceExposureCollectorReport(
+                        collector="windows_listener_process_principals",
+                        status=CollectorStatus.SKIPPED,
+                        record_count=None,
+                    )
+                )
+            else:
+                try:
+                    principal_inventory = tuple(
+                        process_principal_provider(
+                            tuple(process.pid for process in target_processes)
+                        )
+                    )
+                    principal_snapshot_finished_at = float(clock())
+                    principal_verification_processes = tuple(
+                        process_verification_provider()
+                    )
+                    windows_process_principals = principal_observations_for_processes(
+                        principal_inventory,
+                        target_processes,
+                        principal_verification_processes,
+                    )
+                    principal_observed_at = principal_snapshot_finished_at
+                    reports.append(
+                        ServiceExposureCollectorReport(
+                            collector="windows_listener_process_principals",
+                            status=CollectorStatus.SUCCEEDED,
+                            record_count=len(windows_process_principals),
+                            observation_basis=WINDOWS_PROCESS_PRINCIPAL_OBSERVATION_BASIS,
+                        )
+                    )
+                except Exception as exc:
+                    reports.append(
+                        _failure_report("windows_listener_process_principals", exc)
+                    )
 
     if windows_capture is None:
         reports.append(
@@ -289,6 +375,8 @@ def collect_service_exposure_capture(
         docker_observed_at=docker_observed_at,
         manifest_observed_at=float(clock()),
         collector_reports=tuple(reports),
+        windows_process_principals=windows_process_principals,
+        principal_observed_at=principal_observed_at,
         windows_services=windows_services,
         service_observed_at=service_observed_at,
         firewall_context=firewall_context,
@@ -409,6 +497,21 @@ def service_exposure_capture_event_batch(
             for listener in capture.listeners
         )
 
+    principal_events: tuple[ObservationEvent, ...] = ()
+    if capture.windows_process_principals:
+        if capture.principal_observed_at is None:
+            raise ValueError("process principal observations require principal_observed_at")
+        principal_events = tuple(
+            windows_process_principal_event(
+                observation,
+                observed_at=capture.principal_observed_at,
+                source=source,
+                stream_id=stream_id,
+                observation_basis=WINDOWS_PROCESS_PRINCIPAL_OBSERVATION_BASIS,
+            )
+            for observation in capture.windows_process_principals
+        )
+
     service_events: tuple[ObservationEvent, ...] = ()
     if capture.windows_services:
         if capture.service_observed_at is None:
@@ -456,6 +559,7 @@ def service_exposure_capture_event_batch(
 
     return (
         *listener_events,
+        *principal_events,
         *service_events,
         *firewall_events,
         *firewall_rule_events,
