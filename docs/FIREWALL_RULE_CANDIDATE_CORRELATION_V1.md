@@ -44,6 +44,28 @@ Live validation showed that this surface was not sufficient to call a surviving 
 
 A v1 rule event is still readable, but candidate correlation always marks `RULE_CONDITION_SURFACE` unresolved for it. A v1 event can therefore never become a fully-known `CANDIDATE_MATCH` merely because the older captured fields line up.
 
+## Capture-completeness contract
+
+When a service-exposure stream contains `SERVICE_EXPOSURE_CAPTURE_MANIFEST`, the manifest is the completeness source for firewall-rule inventory.
+
+`windows_firewall_rules` must be present exactly once with:
+
+```text
+status = succeeded
+record_count = number of persisted WINDOWS_FIREWALL_RULE_OBSERVED events
+```
+
+Otherwise rule inventory is treated as unavailable. Listener results remain `AMBIGUOUS` with no candidate rules rather than becoming `NO_CANDIDATE`.
+
+This deliberately distinguishes:
+
+```text
+successful zero-rule inventory -> NO_CANDIDATE may be derived
+failed/skipped/missing/mismatched inventory -> AMBIGUOUS
+```
+
+Legacy or explicit low-level streams without a capture manifest retain their previous behavior because they do not carry a collector-completeness contract.
+
 ## Result states
 
 Each listener receives one of three descriptive states.
@@ -64,16 +86,17 @@ It does **not** mean:
 
 ### `NO_CANDIDATE`
 
-No enabled inbound rule remains compatible after applying known v1 dimensions.
+No enabled inbound rule remains compatible after applying known v1 dimensions and, when a capture manifest exists, firewall-rule inventory was successfully collected.
 
-This does **not** prove remote unreachability. The capture can still be incomplete and Windows filtering behavior is broader than this v1 model.
+This does **not** prove remote unreachability. Windows filtering behavior is broader than this v1 model.
 
 ### `AMBIGUOUS`
 
-At least one rule remains source-compatible, but either:
+The available evidence is insufficient for a unique fully-known candidate result. This includes cases where:
 
-- more than one rule is compatible; or
-- at least one relevant dimension cannot be resolved from captured evidence.
+- more than one rule is compatible;
+- at least one relevant dimension cannot be resolved from captured evidence; or
+- the capture manifest says firewall-rule inventory was not successfully collected or cannot be proven complete.
 
 Examples of unresolved dimensions include restrictive remote peer scope, special Windows port tokens such as `RPC`, restrictive package/interface type filters, rule owner/principal/security filters, dynamic targets, incomplete v1 rule evidence, or missing process/service identity.
 
@@ -84,7 +107,7 @@ v1 correlation evaluates these rule dimensions when the corresponding source evi
 - rule condition-surface completeness/version;
 - rule primary status;
 - active network profile versus rule profile;
-- protocol, with TCP and protocol number `6` treated as TCP;
+- protocol, with TCP/`6` treated as TCP and firewall protocol `256` treated as `Any`;
 - local port, including numeric ranges;
 - local address, including exact IPs and CIDR ranges when the listener address is specific;
 - executable program path when a concrete listener path exists;
@@ -108,6 +131,23 @@ An unresolved restrictive dimension keeps the rule as a candidate but marks that
 
 ## Important conservative cases
 
+### Network profile and interface alias
+
+Profile and interface-alias constraints are evaluated against the **same** persisted `WINDOWS_NETWORK_PROFILE_OBSERVED` record. Independent global sets are not combined across interfaces.
+
+For example:
+
+```text
+Ethernet -> Private
+Wi-Fi   -> Public
+```
+
+A rule restricted to `Profile=Public` and `InterfaceAlias=Ethernet` is a known mismatch. The Public category from Wi-Fi cannot be combined with the Ethernet alias.
+
+If an active network-profile record is missing a required category or alias, the pair remains unresolved instead of becoming a false mismatch.
+
+Windows `Get-NetConnectionProfile` category `DomainAuthenticated` is normalized to firewall profile token `Domain` for comparison.
+
 ### Wildcard listener addresses
 
 For listeners bound to `0.0.0.0` or `::`, a restrictive firewall local-address filter is not converted into a false mismatch. The concrete inbound interface/address has not been selected by an observed connection, so the local-address dimension remains unresolved.
@@ -130,7 +170,7 @@ Exact concrete Windows paths can be compared case-insensitively. Environment-var
 
 ### Services
 
-A restrictive service filter is compared only against persisted `WINDOWS_SERVICE_OBSERVED` facts for the listener-owning PID. Absence of service evidence does not become proof that the rule cannot apply.
+A restrictive service filter is compared only against persisted `WINDOWS_SERVICE_OBSERVED` facts for the listener-owning process instance. Absence of service evidence does not become proof that the rule cannot apply.
 
 ### Package, owner, and principal identity
 
@@ -165,7 +205,7 @@ python .\tools\firewall_rule_candidates.py `
 
 Without `--stream-id`, the latest EventStore stream is selected.
 
-The tool is an inspector only. Its output is not an allow/block verdict.
+The tool opens EventStore in read-only mode. It is an inspector only and its output is not an allow/block verdict.
 
 ## Explicit non-goals
 
