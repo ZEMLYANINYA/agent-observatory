@@ -1,6 +1,6 @@
 # Service Exposure Evidence v1
 
-Service Exposure Evidence v1 adds source observations needed to reason about locally exposed and published services later, without turning address/port topology into a vulnerability verdict.
+Service Exposure Evidence v1 records source observations needed to reason about locally exposed and published services without turning address/port topology into a vulnerability verdict.
 
 The governing rule is:
 
@@ -11,81 +11,72 @@ reachable != unauthenticated
 reachable != exploitable
 ```
 
-This layer records evidence only.
-
 ## Architectural position
 
 ```text
-Windows TCP inventory                 Docker inspect
-        |                                  |
-        v                                  v
-HostTcpListener                     DockerPublishedPort
-        |                                  |
-        v                                  v
-TCP_LISTENER_OBSERVED               DOCKER_PORT_PUBLISHED
-        \                                  /
-         \                                /
-          +---------- EventStore --------+
-                         |
-                         v
-              future relationship /
-              exposure analysis layer
+source collection
+    |
+    +-- Windows TCP listeners
+    +-- stable process identity
+    +-- process principal SID
+    +-- Windows services
+    +-- Windows Firewall profile/network context
+    +-- Windows Firewall rule inventory
+    +-- Docker published ports
+    |
+    v
+append-only EventStore
+    |
+    v
+derived relationship / candidate analysis
+    |
+    v
+future effective policy / reachability analysis
 ```
 
-No firewall verdict, service fingerprint, authentication check, remote probe, vulnerability classification, or exploitability conclusion is performed in v1.
+Facts, relationships, and conclusions remain separate.
 
-## Event types
+## Durable observation types
 
-v1 adds exactly two durable observation types:
+The current service-exposure evidence surface includes:
 
 ```text
 TCP_LISTENER_OBSERVED
+WINDOWS_PROCESS_PRINCIPAL_OBSERVED
+WINDOWS_SERVICE_OBSERVED
+WINDOWS_FIREWALL_PROFILE_OBSERVED
+WINDOWS_NETWORK_PROFILE_OBSERVED
+WINDOWS_FIREWALL_RULE_OBSERVED
 DOCKER_PORT_PUBLISHED
+SERVICE_EXPOSURE_CAPTURE_MANIFEST
 ```
 
-A proposed `SERVICE_BINDING_OBSERVED` event is intentionally not added.
+A proposed `SERVICE_BINDING_OBSERVED` source event remains intentionally absent. A binding between listener, process, container, service, and policy evidence is derived relationship logic, not another raw source fact.
 
-The listener and Docker publication are source observations. A normalized service binding would be a relationship derived from those observations and other identity evidence. Persisting it as another source event would duplicate semantics and blur the boundary between evidence and projection.
+## TCP listener evidence
 
-## TCP listener observations
+The live Windows path reuses the bracketed process/TCP/process capture.
 
-The existing Windows collector already uses:
-
-```powershell
-Get-NetTCPConnection
-```
-
-and retains every TCP state. Service Exposure Evidence therefore projects `Listen` / `Listening` records from the existing `TcpConnection` inventory rather than introducing a second Windows TCP collector.
-
-`HostTcpListener` contains:
+For a stable listener process instance, the event can contain:
 
 ```text
 owner_pid
+owner_identity_basis = stable_process_instance
+process = { pid, started_at }
+process_name
+executable_path
 local_address
 local_port
-state
-owner_identity_basis
+bind_scope
 ```
 
-The protocol is currently `tcp`.
+If process stability cannot be established, attribution remains unresolved.
 
-### PID is not process identity
-
-The raw Windows TCP snapshot exposes an owning PID, but this first global listener projection does not have the bracketed process-instance validation used by the application capture path.
-
-Therefore v1 explicitly records:
-
-```text
-owner_identity_basis = pid_only_snapshot
-```
-
-and does **not** serialize a `process: {pid, started_at}` reference.
-
-A later bracketed global collector may strengthen listener attribution to process-instance identity. Until then, `owner_pid` remains a point-in-time owner field rather than durable process identity.
+The lower-level unbracketed helper still represents owner identity as PID-only snapshot evidence.
 
 ## Bind scope
 
-Bind addresses are classified into a small topological vocabulary:
+Bind addresses use:
 
 ```text
 loopback
@@ -94,234 +85,168 @@ specific
 unknown
 ```
 
-Examples:
+`wildcard` describes socket address topology only. It does not mean LAN or Internet reachability.
+
+## Process principal evidence
+
+`WINDOWS_PROCESS_PRINCIPAL_OBSERVED` records the result of `Win32_Process.GetOwnerSid` for bracket-stable listener processes.
+
+The process is verified again after the SID query, so a resolved SID is tied to the same `(pid, started_at)` process instance.
+
+Possible evidence includes both successful and unsuccessful resolution:
 
 ```text
-127.0.0.1  -> loopback
-::1        -> loopback
-0.0.0.0    -> wildcard
-::         -> wildcard
-10.0.0.5   -> specific
+resolved + owner_sid + return_value=0
+unresolved + return_value/reason
 ```
 
-`wildcard` means only that the socket/publication uses an unspecified-address bind.
+Access-denied results remain unresolved. The implementation does not infer a SYSTEM SID from process name or PID.
 
-It does **not** mean:
+## Windows service evidence
+
+`WINDOWS_SERVICE_OBSERVED` records running `Win32_Service` facts associated with listener process IDs and preserves stable process-instance attribution when verified.
+
+A service sharing a process with a listener does not by itself prove that service owns the socket. This matters for shared host processes.
+
+## Windows Firewall context
+
+`WINDOWS_FIREWALL_PROFILE_OBSERVED` records ActiveStore profile context such as enabled state and default inbound/outbound actions.
+
+`WINDOWS_NETWORK_PROFILE_OBSERVED` records interface profile assignment such as Public, Private, or Domain.
+
+These facts are context. A default inbound action is not a per-listener verdict.
+
+## Windows Firewall rule evidence v2
+
+`WINDOWS_FIREWALL_RULE_OBSERVED` event version 2 records the expanded inbound ActiveStore rule condition surface, including:
 
 ```text
-Internet reachable
-LAN reachable
-firewall permitted
-NAT forwarded
-unauthenticated
-vulnerable
-exploitable
-```
-
-Those require independent evidence.
-
-## TCP_LISTENER_OBSERVED payload
-
-Current payload shape:
-
-```json
-{
-  "protocol": "tcp",
-  "owner_pid": 1234,
-  "owner_identity_basis": "pid_only_snapshot",
-  "state": "Listen",
-  "local_address": "0.0.0.0",
-  "local_port": 11434,
-  "bind_scope": "wildcard",
-  "observation_basis": "windows_get_nettcpconnection_snapshot"
-}
-```
-
-No `reachable`, `exploitable`, `vulnerable`, service-name, or authentication field exists in this event.
-
-## Docker publication observations
-
-Docker host-port mappings are collected from structured `docker inspect` JSON for currently running containers.
-
-The collector first obtains the exact running container IDs with:
-
-```text
-docker ps -q --no-trunc
-```
-
-and then inspects those IDs.
-
-It does not parse the human-oriented `PORTS` display column from `docker ps`.
-
-`DockerPublishedPort` contains:
-
-```text
-container_id
-container_name
-image
+enabled / direction / action / profile
 protocol
-container_port
-host_address
-host_port
-observation_basis
+local and remote ports
+local and remote addresses
+program
+package
+service
+interface type and alias
+owner
+primary/status metadata
+loose/local-only mapping flags
+ICMP type
+dynamic target
+authentication
+encryption
+override block rules
+local user
+remote user
+remote machine
 ```
 
-One object is created for each host binding returned by Docker. Dual-stack publications can therefore produce separate IPv4 and IPv6 observations.
+The rule name or display name is descriptive source metadata and is not parsed to invent missing package, application, or principal identity.
 
-Docker ports whose inspect value is `null` are container-exposed ports without a host publication and do not produce `DOCKER_PORT_PUBLISHED` events.
+Event version 1 remains readable. Because it predates several condition fields, analysis must retain `RULE_CONDITION_SURFACE` as unknown for v1 rules.
 
-## DOCKER_PORT_PUBLISHED payload
+## Firewall candidate correlation
 
-Current payload shape:
+`agent_observatory.analysis.correlate_firewall_rule_candidates(...)` is a derived analysis layer over source events.
 
-```json
-{
-  "container": {
-    "id": "...",
-    "name": "ollama",
-    "image": "ollama/ollama:latest"
-  },
-  "protocol": "tcp",
-  "container_port": 11434,
-  "host_address": "0.0.0.0",
-  "host_port": 11434,
-  "bind_scope": "wildcard",
-  "observation_basis": "docker_inspect_running_container"
-}
-```
-
-The event states that Docker reported a host publication. It does not establish successful reachability from any other network location.
-
-## Docker collection failure semantics
-
-The low-level Docker collector raises `DockerCollectionError` when:
+It compares known listener context against enabled inbound firewall rules across dimensions such as:
 
 ```text
-docker executable is unavailable
-a Docker command times out
-a Docker command returns a non-zero exit code
-docker inspect JSON is invalid or structurally incomplete
+profile
+protocol
+local port/address
+program
+service
+owner SID
+remote constraints
+interface constraints
+security-filter conditions
+dynamic target
+rule status
 ```
 
-It does not silently convert collection failure into an empty publication set.
+A known incompatibility eliminates a rule.
 
-An empty result from `collect_docker_published_ports()` means the successful `docker ps` query returned no running container IDs, or successful inspect evidence contained no published host bindings.
+An unresolved restrictive condition preserves the rule as a candidate with an unknown dimension.
 
-A higher-level live capture tool should preserve whether Docker collection was required, skipped, successful, or failed. That capture-manifest concern is intentionally separate from these source observation models.
-
-## Deterministic evidence batch
-
-`service_exposure_event_batch(...)` accepts explicit:
+Statuses are:
 
 ```text
-TCP inventory
-Docker published-port inventory
-TCP observation timestamp
-Docker observation timestamp
-source
-stream_id
+CANDIDATE_MATCH
+NO_CANDIDATE
+AMBIGUOUS
 ```
 
-The two collector timestamps remain separate. v1 does not manufacture simultaneity between Windows TCP collection and Docker inspection.
+`CANDIDATE_MATCH` means one source-compatible candidate remains with no unresolved dimensions. It is not an effective Windows Firewall allow/block verdict.
 
-Serialization order is deterministic:
+`AMBIGUOUS` can mean either multiple fully known compatible rules or one/more rules with unresolved dimensions.
+
+`NO_CANDIDATE` means no collected rule survived the current compatibility checks. It does not prove remote unreachability.
+
+Rule action is retained as source data but is not used to implement effective allow/block precedence in this layer.
+
+## Stable identity joins
+
+Where process identity is available, relationships use:
 
 ```text
-1. TCP_LISTENER_OBSERVED events
-2. DOCKER_PORT_PUBLISHED events
+(pid, started_at)
 ```
 
-Within each group, facts are sorted by stable descriptive fields rather than caller iteration order.
+rather than PID alone.
 
-`append_service_exposure_batch(...)` appends the complete constructed batch through the existing EventStore `append_many()` transaction.
+This applies to principal evidence and service-name correlation. PID reuse must not transfer evidence between different process instances.
 
-## EventStore and schema
+## Docker publication evidence
 
-The SQLite storage schema remains EventStore schema v1. Adding new `EventType` enum values does not change the physical SQLite table layout.
+Docker host-port mappings come from structured `docker inspect` data for running containers.
 
-The durable evidence ledger remains append-only.
+A `DOCKER_PORT_PUBLISHED` event says Docker reported a host publication. It does not prove that another host can reach it or that the application behind it is unauthenticated.
 
-## Current Graph behavior
+## Capture completeness
 
-Evidence Graph v1 does not yet project the new exposure events into service/listener nodes or relationships.
+`SERVICE_EXPOSURE_CAPTURE_MANIFEST` records each requested collector as succeeded, failed, or skipped.
 
-Until an explicit graph design is added, these events remain source-accounted by the projection fallback note:
+A failed collector is not converted into a successful zero-record observation.
 
-```text
-event_type_not_projected_v1
-```
+For process-principal evidence, persistence additionally validates that principal facts and the principal collector report agree on presence and record count.
 
-This is preferable to silently inventing a service identity or binding relationship.
+## EventStore
 
-The future graph layer should decide, explicitly, how to represent concepts such as:
+The SQLite physical schema remains EventStore schema v1. New observation types and firewall event versions do not require a new table layout.
 
-```text
-local listener endpoint
-container identity
-host publication
-process-instance attribution
-publication-to-listener correlation
-```
+The durable ledger remains append-only.
 
-without treating temporal or port-number correlation as causality.
+## Current graph behavior
 
-## Future reachability evidence
+Evidence Graph v1 does not yet project these service-exposure facts into a dedicated service-exposure graph model.
 
-A later layer may add evidence from sources such as:
-
-```text
-Windows Firewall configuration
-Docker networking configuration
-host interface inventory
-controlled LAN probes
-explicit loopback probes
-service-specific safe metadata requests
-```
-
-Those observations must remain distinct from the listener/publication facts recorded here.
-
-For example:
-
-```text
-0.0.0.0:11434 observed listening
-```
-
-is a valid v1 fact.
-
-This is not a valid v1 conclusion:
-
-```text
-Ollama is remotely reachable and unauthenticated
-```
-
-That conclusion requires additional evidence for service identity, network path, response behavior, and authentication semantics.
+Until an explicit projection is designed, source events remain ledger evidence and candidate correlation remains an analysis result rather than a persisted source fact.
 
 ## Current non-goals
 
-Service Exposure Evidence v1 does not provide:
+This layer does not provide:
 
 ```text
-service identification by port number
-Redis detection
-Ollama detection
-firewall evaluation
-remote reachability probes
-authentication checks
+service identity from port number alone
+remote reachability proof
+authentication testing
 HTTP/API interrogation
 vulnerability scanning
 exploit checks
-exposure severity
-anomaly scoring
+effective Windows Firewall precedence/disposition
+exposure severity scoring
 automatic blocking
 ```
 
-Those belong to later evidence collectors and deterministic analysis passes.
+Future layers may add controlled reachability evidence or effective policy evaluation, but those conclusions must remain traceable to explicit source facts.
 
 ## Design principle
 
 ```text
-Observe the bind.
-Observe the publication.
-Preserve the source.
-Do not invent the path.
+Observe the source fact.
+Bind identity only when stable.
+Preserve uncertainty explicitly.
+Correlate without promoting correlation into a verdict.
 ```
