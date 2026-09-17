@@ -54,6 +54,21 @@ class _DimensionResult:
 _ANY_VALUES = {"any", "*", "all"}
 _TCP_VALUES = {"tcp", "6"}
 _SPECIAL_PORT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_FIREWALL_RULE_V2_FIELDS = {
+    "owner",
+    "primary_status",
+    "status",
+    "loose_source_mapping",
+    "local_only_mapping",
+    "icmp_types",
+    "dynamic_targets",
+    "authentication",
+    "encryption",
+    "override_block_rules",
+    "local_users",
+    "remote_users",
+    "remote_machines",
+}
 
 
 def _strings(value: object) -> tuple[str, ...]:
@@ -248,6 +263,53 @@ def _package_result(values: tuple[str, ...]) -> _DimensionResult:
     return _DimensionResult(True, False)
 
 
+def _rule_identity_result(value: object) -> _DimensionResult:
+    if value is None:
+        return _DimensionResult(True, True)
+    text = str(value).strip()
+    if not text or text.casefold() in _ANY_VALUES:
+        return _DimensionResult(True, True)
+    return _DimensionResult(True, False)
+
+
+def _constraint_result(
+    values: tuple[str, ...],
+    *,
+    unrestricted: frozenset[str] = frozenset(),
+) -> _DimensionResult:
+    tokens = tuple(item.casefold() for item in _tokens(values))
+    if not tokens or any(item in _ANY_VALUES for item in tokens):
+        return _DimensionResult(True, True)
+    if unrestricted and all(item in unrestricted for item in tokens):
+        return _DimensionResult(True, True)
+    return _DimensionResult(True, False)
+
+
+def _mapping_flag_result(value: object) -> _DimensionResult:
+    if value is None or value is False:
+        return _DimensionResult(True, True)
+    if value is True:
+        return _DimensionResult(True, False)
+    return _DimensionResult(True, False)
+
+
+def _rule_status_result(value: object) -> _DimensionResult:
+    if value is None:
+        return _DimensionResult(True, False)
+    text = str(value).strip().casefold()
+    if text in {"ok"}:
+        return _DimensionResult(True, True)
+    return _DimensionResult(True, False)
+
+
+def _condition_surface_result(rule: StoredEvent) -> _DimensionResult:
+    if rule.event_version < 2:
+        return _DimensionResult(True, False)
+    if not _FIREWALL_RULE_V2_FIELDS.issubset(rule.payload):
+        return _DimensionResult(True, False)
+    return _DimensionResult(True, True)
+
+
 def _service_names_by_pid(events: tuple[StoredEvent, ...]) -> dict[int, tuple[str, ...]]:
     names: dict[int, set[str]] = {}
     for event in events:
@@ -280,6 +342,8 @@ def _candidate_for_rule(
     process_name = listener.payload.get("process_name")
 
     dimensions = {
+        "RULE_CONDITION_SURFACE": _condition_surface_result(rule),
+        "RULE_STATUS": _rule_status_result(payload.get("primary_status")),
         "PROFILE": _profile_result(str(payload.get("profile", "")), active_categories),
         "PROTOCOL": _protocol_result(_strings(payload.get("protocol"))),
         "LOCAL_PORT": _port_result(_strings(payload.get("local_ports")), local_port),
@@ -289,14 +353,34 @@ def _candidate_for_rule(
             executable_path if isinstance(executable_path, str) else None,
             process_name if isinstance(process_name, str) else None,
         ),
+        "PACKAGE": _package_result(_strings(payload.get("packages"))),
         "SERVICE": _service_result(_strings(payload.get("services")), service_names),
+        "OWNER": _rule_identity_result(payload.get("owner")),
         "REMOTE_PORT": _remote_scope_result(_strings(payload.get("remote_ports"))),
         "REMOTE_ADDRESS": _remote_scope_result(_strings(payload.get("remote_addresses"))),
         "INTERFACE_ALIAS": _interface_alias_result(
             _strings(payload.get("interface_aliases")), active_aliases
         ),
         "INTERFACE_TYPE": _interface_type_result(_strings(payload.get("interface_types"))),
-        "PACKAGE": _package_result(_strings(payload.get("packages"))),
+        "DYNAMIC_TARGET": _constraint_result(_strings(payload.get("dynamic_targets"))),
+        "ICMP_TYPE": _constraint_result(_strings(payload.get("icmp_types"))),
+        "AUTHENTICATION": _constraint_result(
+            _strings(payload.get("authentication")),
+            unrestricted=frozenset({"notrequired", "none"}),
+        ),
+        "ENCRYPTION": _constraint_result(
+            _strings(payload.get("encryption")),
+            unrestricted=frozenset({"notrequired", "none"}),
+        ),
+        "OVERRIDE_BLOCK_RULES": _constraint_result(
+            _strings(payload.get("override_block_rules")),
+            unrestricted=frozenset({"false", "none"}),
+        ),
+        "LOCAL_USER": _constraint_result(_strings(payload.get("local_users"))),
+        "REMOTE_USER": _constraint_result(_strings(payload.get("remote_users"))),
+        "REMOTE_MACHINE": _constraint_result(_strings(payload.get("remote_machines"))),
+        "LOOSE_SOURCE_MAPPING": _mapping_flag_result(payload.get("loose_source_mapping")),
+        "LOCAL_ONLY_MAPPING": _mapping_flag_result(payload.get("local_only_mapping")),
     }
 
     if any(result.known and not result.compatible for result in dimensions.values()):
@@ -400,7 +484,8 @@ def correlate_firewall_rule_candidates(
         limitations = (
             "candidate correlation does not compute Windows Firewall precedence or effective disposition",
             "candidate correlation does not prove remote reachability",
-            "restrictive remote peer filters remain unresolved without a concrete inbound peer",
+            "restrictive remote peer, principal, package, owner, dynamic-target, and security filters remain unresolved without matching evidence",
+            "v1 firewall-rule events have an intentionally incomplete condition surface and remain unresolved",
         )
         results.append(
             ListenerFirewallCandidates(
