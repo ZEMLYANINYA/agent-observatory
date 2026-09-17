@@ -11,8 +11,8 @@ from uuid import uuid4
 from agent_observatory.evidence import (
     CollectorStatus,
     ServiceExposureCapture,
-    append_service_exposure_capture,
     collect_service_exposure_capture,
+    service_exposure_capture_event_batch,
 )
 from agent_observatory.storage import EventStore, EventType, StoredEvent
 
@@ -49,12 +49,12 @@ def capture_into_store(
         raise ValueError(f"stream already exists: {stream_id}")
 
     capture = capture_provider(include_docker=include_docker)
-    appended = append_service_exposure_capture(
-        store,
+    batch = service_exposure_capture_event_batch(
         capture,
         source=source,
         stream_id=stream_id,
     )
+    appended = store.append_many(batch, require_new_stream=True)
     return capture, appended
 
 
