@@ -110,14 +110,19 @@ def _timestamp(value: object) -> float | None:
 
 def _powershell_process_principal_inventory(process_ids: tuple[int, ...]) -> str:
     pid_csv = ",".join(str(pid) for pid in process_ids)
-    command = "$targetPids = @(" + pid_csv + ")\n" + r"""
-$rows = foreach ($pid in $targetPids) {
-    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $pid" -ErrorAction SilentlyContinue |
+    command = (
+        "$ErrorActionPreference = 'Stop'\n"
+        + "$targetPids = @("
+        + pid_csv
+        + ")\n"
+        + r"""
+$rows = foreach ($processId in $targetPids) {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue |
         Select-Object -First 1
 
     if ($null -eq $process) {
         [PSCustomObject]@{
-            process_id = [int]$pid
+            process_id = [int]$processId
             observed_started_at = $null
             process_name = $null
             owner_sid = $null
@@ -158,6 +163,7 @@ $rows = foreach ($pid in $targetPids) {
 
 $rows | ConvertTo-Json -Compress
 """
+    )
     return run_powershell_text(command)
 
 
@@ -216,9 +222,17 @@ def collect_windows_process_principals(
     )
     if not normalized:
         return ()
-    return parse_windows_process_principal_inventory(
+
+    snapshots = parse_windows_process_principal_inventory(
         _powershell_process_principal_inventory(normalized)
     )
+    observed_ids = tuple(snapshot.process_id for snapshot in snapshots)
+    if observed_ids != normalized:
+        raise ValueError(
+            "Windows process principal inventory must return exactly one record "
+            "for every requested PID"
+        )
+    return snapshots
 
 
 def _get_owner_sid_failure_reason(return_value: int | None) -> str:
