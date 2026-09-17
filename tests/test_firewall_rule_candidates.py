@@ -90,9 +90,20 @@ class FirewallRuleCandidateTests(unittest.TestCase):
         interface_types=("Any",),
         interface_aliases=("Any",),
         packages=("Any",),
+        owner=None,
+        primary_status="OK",
+        dynamic_targets=("Any",),
+        authentication=("NotRequired",),
+        encryption=("NotRequired",),
+        override_block_rules=("False",),
+        local_users=("Any",),
+        remote_users=("Any",),
+        remote_machines=("Any",),
+        event_version=2,
     ):
         return ObservationEvent(
             event_type=EventType.WINDOWS_FIREWALL_RULE_OBSERVED,
+            event_version=event_version,
             observed_at=12.0,
             source="candidate-test",
             stream_id="service-exposure:test",
@@ -106,9 +117,16 @@ class FirewallRuleCandidateTests(unittest.TestCase):
                 "edge_traversal_policy": "Block",
                 "policy_store_source_type": "Local",
                 "policy_store_source": "PersistentStore",
+                "owner": owner,
+                "primary_status": primary_status,
+                "status": "OK",
+                "loose_source_mapping": False,
+                "local_only_mapping": False,
                 "protocol": list(protocol),
                 "local_ports": list(local_ports),
                 "remote_ports": list(remote_ports),
+                "icmp_types": ["Any"],
+                "dynamic_targets": list(dynamic_targets),
                 "local_addresses": list(local_addresses),
                 "remote_addresses": list(remote_addresses),
                 "programs": list(programs),
@@ -116,6 +134,12 @@ class FirewallRuleCandidateTests(unittest.TestCase):
                 "services": list(services),
                 "interface_types": list(interface_types),
                 "interface_aliases": list(interface_aliases),
+                "authentication": list(authentication),
+                "encryption": list(encryption),
+                "override_block_rules": list(override_block_rules),
+                "local_users": list(local_users),
+                "remote_users": list(remote_users),
+                "remote_machines": list(remote_machines),
                 "observation_basis": "test",
             },
         )
@@ -218,6 +242,69 @@ class FirewallRuleCandidateTests(unittest.TestCase):
         listener = result.listeners[0]
         self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
         self.assertIn("LOCAL_ADDRESS", listener.candidates[0].unknown_dimensions)
+
+    def test_v1_rule_event_is_never_treated_as_full_condition_match(self) -> None:
+        rule = self._rule(event_version=1)
+        payload = dict(rule.payload)
+        for field in (
+            "owner",
+            "primary_status",
+            "status",
+            "loose_source_mapping",
+            "local_only_mapping",
+            "icmp_types",
+            "dynamic_targets",
+            "authentication",
+            "encryption",
+            "override_block_rules",
+            "local_users",
+            "remote_users",
+            "remote_machines",
+        ):
+            payload.pop(field, None)
+        rule = ObservationEvent(
+            event_type=rule.event_type,
+            event_version=1,
+            observed_at=rule.observed_at,
+            source=rule.source,
+            stream_id=rule.stream_id,
+            payload=payload,
+        )
+        result = self._correlate(self._listener(), self._network_profile(), rule)
+        listener = result.listeners[0]
+        self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
+        self.assertIn("RULE_CONDITION_SURFACE", listener.candidates[0].unknown_dimensions)
+
+    def test_restrictive_rule_owner_remains_unresolved_without_principal_evidence(self) -> None:
+        result = self._correlate(
+            self._listener(),
+            self._network_profile(),
+            self._rule(owner="S-1-5-21-owner"),
+        )
+        listener = result.listeners[0]
+        self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
+        self.assertIn("OWNER", listener.candidates[0].unknown_dimensions)
+
+    def test_restrictive_security_filter_remains_unresolved(self) -> None:
+        result = self._correlate(
+            self._listener(),
+            self._network_profile(),
+            self._rule(authentication=("Required",), remote_users=("S-1-5-21-user",)),
+        )
+        listener = result.listeners[0]
+        self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
+        self.assertIn("AUTHENTICATION", listener.candidates[0].unknown_dimensions)
+        self.assertIn("REMOTE_USER", listener.candidates[0].unknown_dimensions)
+
+    def test_dynamic_target_is_unresolved_not_plain_port_match(self) -> None:
+        result = self._correlate(
+            self._listener(),
+            self._network_profile(),
+            self._rule(dynamic_targets=("ProximitySharing",)),
+        )
+        listener = result.listeners[0]
+        self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
+        self.assertIn("DYNAMIC_TARGET", listener.candidates[0].unknown_dimensions)
 
 
 if __name__ == "__main__":
