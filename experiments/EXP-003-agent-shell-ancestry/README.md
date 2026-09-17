@@ -27,7 +27,9 @@ It does **not** prove causality beyond the observed process ancestry, maliciousn
 
 The observer is `tools/fixture_c_ancestry.py`.
 
-The target AI agent must execute the exact command printed by the observer. That command launches `tools/fixture_c_intermediate.ps1` as a descendant of the target agent.
+The target AI agent must execute the exact command printed by the observer. The visible command intentionally contains no file-system paths. It uses PowerShell `-EncodedCommand`; the UTF-16LE payload carries the absolute script, session, Python, and child paths so Markdown or agent command rendering cannot rewrite underscores, backslashes, Unicode path components, or the working directory.
+
+The decoded command launches `tools/fixture_c_intermediate.ps1` as a descendant of the target agent.
 
 The PowerShell intermediary:
 
@@ -78,9 +80,13 @@ Manus
 Perplexity
 ```
 
-The observer prints one exact `powershell.exe ... fixture_c_intermediate.ps1 ...` command.
+The observer prints one exact command of the form:
 
-Ask the selected AI desktop agent to execute that command unchanged. Do not run the printed command manually from the observer terminal, because then PowerShell will not be evidence of agent ancestry.
+```text
+powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64>
+```
+
+Ask the selected AI desktop agent to execute that command unchanged. Do not ask it to decode, inspect, normalize, or rewrite the payload. Do not run the printed command manually from the observer terminal, because then PowerShell will not be evidence of agent ancestry.
 
 ## PASS criteria
 
@@ -144,6 +150,7 @@ Ctrl+C records the local fixture result as `interrupted` and still signals both 
 
 `tests/test_fixture_c_ancestry.py` covers:
 
+- encoded command transport round-trip, including underscores and Unicode path content;
 - expected historical-parent relation;
 - parent still alive after release;
 - child PID reuse;
