@@ -32,16 +32,29 @@ def _payload() -> dict:
                 "edge_traversal_policy": "Block",
                 "policy_store_source_type": "Local",
                 "policy_store_source": "PersistentStore",
+                "owner": "S-1-5-21-test-owner",
+                "primary_status": "OK",
+                "status": "The rule was parsed successfully from the store.",
+                "loose_source_mapping": False,
+                "local_only_mapping": False,
                 "protocol": ["TCP"],
                 "local_ports": ["5986"],
                 "remote_ports": ["Any"],
+                "icmp_types": ["Any"],
+                "dynamic_targets": ["Any"],
                 "local_addresses": ["Any"],
                 "remote_addresses": ["LocalSubnet", "10.0.0.0/8"],
                 "programs": ["System"],
-                "packages": ["Any"],
+                "packages": ["S-1-15-2-package"],
                 "services": ["WinRM"],
                 "interface_types": ["Wireless", "Lan"],
                 "interface_aliases": ["Any"],
+                "authentication": ["Required"],
+                "encryption": ["NotRequired"],
+                "override_block_rules": ["False"],
+                "local_users": ["Any"],
+                "remote_users": ["S-1-5-21-remote-user"],
+                "remote_machines": ["Any"],
             },
             {
                 "name": "rule-a",
@@ -53,9 +66,16 @@ def _payload() -> dict:
                 "edge_traversal_policy": "Block",
                 "policy_store_source_type": "Local",
                 "policy_store_source": "PersistentStore",
+                "owner": None,
+                "primary_status": "OK",
+                "status": "OK",
+                "loose_source_mapping": False,
+                "local_only_mapping": False,
                 "protocol": ["TCP"],
                 "local_ports": ["445"],
                 "remote_ports": ["Any"],
+                "icmp_types": ["Any"],
+                "dynamic_targets": ["Any"],
                 "local_addresses": ["Any"],
                 "remote_addresses": ["Any"],
                 "programs": ["Any"],
@@ -63,6 +83,12 @@ def _payload() -> dict:
                 "services": ["Any"],
                 "interface_types": ["Any"],
                 "interface_aliases": ["Any"],
+                "authentication": ["NotRequired"],
+                "encryption": ["NotRequired"],
+                "override_block_rules": ["False"],
+                "local_users": ["Any"],
+                "remote_users": ["Any"],
+                "remote_machines": ["Any"],
             },
         ],
     }
@@ -78,10 +104,17 @@ class WindowsFirewallRuleInventoryTests(unittest.TestCase):
         self.assertTrue(allow.enabled)
         self.assertEqual(allow.action, "Allow")
         self.assertEqual(allow.profile, "Public")
+        self.assertEqual(allow.owner, "S-1-5-21-test-owner")
+        self.assertEqual(allow.primary_status, "OK")
+        self.assertFalse(allow.loose_source_mapping)
         self.assertEqual(allow.protocol, ("TCP",))
         self.assertEqual(allow.local_ports, ("5986",))
+        self.assertEqual(allow.dynamic_targets, ("Any",))
         self.assertEqual(allow.remote_addresses, ("LocalSubnet", "10.0.0.0/8"))
+        self.assertEqual(allow.packages, ("S-1-15-2-package",))
         self.assertEqual(allow.services, ("WinRM",))
+        self.assertEqual(allow.authentication, ("Required",))
+        self.assertEqual(allow.remote_users, ("S-1-5-21-remote-user",))
         self.assertEqual(allow.interface_types, ("Wireless", "Lan"))
         self.assertGreater(inventory.capture_finished_at, inventory.capture_started_at)
 
@@ -106,9 +139,14 @@ class WindowsFirewallRuleInventoryTests(unittest.TestCase):
         )
 
         self.assertEqual(event.event_type, EventType.WINDOWS_FIREWALL_RULE_OBSERVED)
+        self.assertEqual(event.event_version, 2)
         self.assertEqual(event.payload["action"], "Allow")
         self.assertEqual(event.payload["local_ports"], ["5986"])
+        self.assertEqual(event.payload["owner"], "S-1-5-21-test-owner")
+        self.assertEqual(event.payload["packages"], ["S-1-15-2-package"])
         self.assertEqual(event.payload["services"], ["WinRM"])
+        self.assertEqual(event.payload["authentication"], ["Required"])
+        self.assertEqual(event.payload["remote_users"], ["S-1-5-21-remote-user"])
         for forbidden in (
             "matches_listener",
             "applies_to_listener",
@@ -129,6 +167,7 @@ class WindowsFirewallRuleInventoryTests(unittest.TestCase):
         )
 
         self.assertEqual(tuple(event.payload["name"] for event in batch), ("rule-a", "rule-z"))
+        self.assertEqual(tuple(event.event_version for event in batch), (2, 2))
         self.assertEqual(
             tuple(event.observed_at for event in batch),
             (inventory.capture_finished_at, inventory.capture_finished_at),
@@ -151,7 +190,9 @@ class WindowsFirewallRuleInventoryTests(unittest.TestCase):
         self.assertTrue(
             all(event.event_type is EventType.WINDOWS_FIREWALL_RULE_OBSERVED for event in loaded)
         )
+        self.assertEqual(tuple(event.event_version for event in loaded), (2, 2))
         self.assertEqual(loaded[1].payload["remote_addresses"], ["LocalSubnet", "10.0.0.0/8"])
+        self.assertEqual(loaded[1].payload["authentication"], ["Required"])
 
     def test_empty_inventory_is_valid_and_emits_empty_batch(self) -> None:
         payload = _payload()
@@ -171,6 +212,12 @@ class WindowsFirewallRuleInventoryTests(unittest.TestCase):
     def test_enabled_must_remain_boolean(self) -> None:
         payload = _payload()
         payload["rules"][0]["enabled"] = "True"
+        with self.assertRaises(TypeError):
+            parse_windows_firewall_rule_inventory(json.dumps(payload))
+
+    def test_optional_mapping_flags_must_remain_boolean(self) -> None:
+        payload = _payload()
+        payload["rules"][0]["local_only_mapping"] = "False"
         with self.assertRaises(TypeError):
             parse_windows_firewall_rule_inventory(json.dumps(payload))
 
