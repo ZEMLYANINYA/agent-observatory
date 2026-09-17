@@ -4,6 +4,9 @@ from agent_observatory.endpoint.service_exposure import (
     DockerPublishedPort,
     HostTcpListener,
 )
+from agent_observatory.endpoint.windows_process_principals import (
+    WindowsProcessPrincipalObservation,
+)
 from agent_observatory.endpoint.windows_services import WindowsServiceProcessObservation
 from agent_observatory.storage import EventType, ObservationEvent
 
@@ -39,6 +42,40 @@ def tcp_listener_event(
             "local_address": listener.local_address,
             "local_port": listener.local_port,
             "bind_scope": listener.bind_scope.value,
+            "observation_basis": observation_basis,
+        },
+    )
+
+
+def windows_process_principal_event(
+    observation: WindowsProcessPrincipalObservation,
+    *,
+    observed_at: float,
+    source: str,
+    stream_id: str | None = None,
+    observation_basis: str = (
+        "windows_cim_win32_process_getownersid; process_verified_after_principal_query"
+    ),
+) -> ObservationEvent:
+    """Persist one process-principal query without inventing missing ownership."""
+
+    if not isinstance(observation_basis, str) or not observation_basis.strip():
+        raise ValueError("observation_basis must be a non-empty string")
+
+    return ObservationEvent(
+        event_type=EventType.WINDOWS_PROCESS_PRINCIPAL_OBSERVED,
+        observed_at=observed_at,
+        source=source,
+        stream_id=stream_id,
+        payload={
+            "process_id": observation.process_id,
+            "process": observation.process_ref,
+            "process_name": observation.process_name,
+            "process_identity_basis": observation.process_identity_basis,
+            "owner_sid": observation.owner_sid,
+            "resolution_state": observation.resolution_state.value,
+            "resolution_reason": observation.resolution_reason,
+            "get_owner_sid_return_value": observation.return_value,
             "observation_basis": observation_basis,
         },
     )
