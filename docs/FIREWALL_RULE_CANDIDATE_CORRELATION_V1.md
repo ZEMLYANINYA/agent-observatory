@@ -22,6 +22,28 @@ source-compatible candidate rules
 
 The output is a read-only derived view. No new EventStore facts are appended.
 
+## Firewall rule evidence versions
+
+`WINDOWS_FIREWALL_RULE_OBSERVED` v1 captured the initial rule/filter surface:
+
+- profile, protocol, ports, addresses;
+- program/package/service filters;
+- interface alias/type;
+- action and basic rule metadata.
+
+Live validation showed that this surface was not sufficient to call a surviving rule fully compatible. Windows Firewall rules can also carry owner/principal/security and dynamic-transport conditions.
+
+`WINDOWS_FIREWALL_RULE_OBSERVED` v2 therefore additionally preserves:
+
+- rule `Owner`;
+- `PrimaryStatus` and status text;
+- `LooseSourceMapping` and `LocalOnlyMapping`;
+- `IcmpType` and `DynamicTarget`/dynamic transport;
+- security-filter `Authentication`, `Encryption`, and `OverrideBlockRules`;
+- security-filter `LocalUser`, `RemoteUser`, and `RemoteMachine`.
+
+A v1 rule event is still readable, but candidate correlation always marks `RULE_CONDITION_SURFACE` unresolved for it. A v1 event can therefore never become a fully-known `CANDIDATE_MATCH` merely because the older captured fields line up.
+
 ## Result states
 
 Each listener receives one of three descriptive states.
@@ -53,23 +75,32 @@ At least one rule remains source-compatible, but either:
 - more than one rule is compatible; or
 - at least one relevant dimension cannot be resolved from captured evidence.
 
-Examples of unresolved dimensions include restrictive remote peer scope, special Windows port tokens such as `RPC`, restrictive package/interface type filters, or missing process/service identity.
+Examples of unresolved dimensions include restrictive remote peer scope, special Windows port tokens such as `RPC`, restrictive package/interface type filters, rule owner/principal/security filters, dynamic targets, incomplete v1 rule evidence, or missing process/service identity.
 
 ## Dimensions evaluated
 
-v1 evaluates these rule dimensions:
+v1 correlation evaluates these rule dimensions when the corresponding source evidence exists:
 
+- rule condition-surface completeness/version;
+- rule primary status;
 - active network profile versus rule profile;
 - protocol, with TCP and protocol number `6` treated as TCP;
 - local port, including numeric ranges;
 - local address, including exact IPs and CIDR ranges when the listener address is specific;
 - executable program path when a concrete listener path exists;
 - Windows service name when service attribution exists;
+- package filter;
+- rule owner;
 - remote port scope;
 - remote address scope;
 - interface alias;
 - interface type;
-- package filter.
+- dynamic target/transport;
+- ICMP type condition;
+- authentication and encryption conditions;
+- override-block condition;
+- local-user, remote-user, and remote-machine security conditions;
+- loose-source and local-only mapping flags.
 
 A known contradiction excludes a rule from the candidate set.
 
@@ -89,6 +120,10 @@ A listening socket has no concrete remote peer. Restrictive `RemoteAddress` or `
 
 Tokens such as `RPC` are preserved as unresolved rather than being guessed into numeric ports.
 
+### Dynamic transports
+
+Windows can use dynamic targets such as proximity sharing or Wi-Fi Direct where ordinary protocol/port conditions are not sufficient to describe matching. A non-`Any` dynamic target therefore remains unresolved in candidate correlation.
+
 ### Program paths
 
 Exact concrete Windows paths can be compared case-insensitively. Environment-variable and wildcard-bearing rule program filters remain unresolved unless a later layer adds safe expansion semantics.
@@ -96,6 +131,14 @@ Exact concrete Windows paths can be compared case-insensitively. Environment-var
 ### Services
 
 A restrictive service filter is compared only against persisted `WINDOWS_SERVICE_OBSERVED` facts for the listener-owning PID. Absence of service evidence does not become proof that the rule cannot apply.
+
+### Package, owner, and principal identity
+
+Restrictive package, owner, local-user, remote-user, or remote-machine conditions remain unresolved unless matching identity evidence is available. Rule names and display names are never parsed as substitutes for source filter evidence.
+
+### Security conditions
+
+Authentication, encryption, and authenticated-bypass conditions are preserved as source facts. Restrictive values remain unresolved at this layer because candidate correlation does not model IPsec/security-context fulfillment.
 
 ## Evidence bounds
 
@@ -131,7 +174,7 @@ v1 does not implement:
 - Windows Filtering Platform precedence;
 - effective allow/block disposition;
 - rule weighting or winner selection;
-- IPsec/authentication policy;
+- IPsec/authentication fulfillment;
 - edge-traversal behavior evaluation;
 - NAT/router reachability;
 - active remote probing;
