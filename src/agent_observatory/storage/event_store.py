@@ -291,16 +291,42 @@ class EventStore:
     def append_many(
         self,
         events: Iterable[ObservationEvent],
+        *,
+        require_new_stream: bool = False,
     ) -> tuple[StoredEvent, ...]:
         if self.read_only:
             raise RuntimeError("cannot append to read-only EventStore")
+        if not isinstance(require_new_stream, bool):
+            raise TypeError("require_new_stream must be a boolean")
 
         prepared = tuple(self._prepare_event(event) for event in events)
         if not prepared:
             return ()
 
+        claimed_stream_id: str | None = None
+        if require_new_stream:
+            stream_ids = {item[4] for item in prepared}
+            if None in stream_ids or len(stream_ids) != 1:
+                raise ValueError(
+                    "require_new_stream requires all events to share one non-null stream_id"
+                )
+            claimed_stream_id = next(iter(stream_ids))
+            assert claimed_stream_id is not None
+
         stored: list[StoredEvent] = []
         with self._connect() as connection:
+            if claimed_stream_id is not None:
+                # Acquire the SQLite write reservation before checking stream occupancy.
+                # Competing capture writers therefore serialize at this boundary:
+                # only one can observe the stream as absent and append its batch.
+                connection.execute("BEGIN IMMEDIATE")
+                occupied = connection.execute(
+                    "SELECT 1 FROM events WHERE stream_id = ? LIMIT 1",
+                    (claimed_stream_id,),
+                ).fetchone()
+                if occupied is not None:
+                    raise ValueError(f"stream already exists: {claimed_stream_id}")
+
             for (
                 event_type,
                 event_version,
