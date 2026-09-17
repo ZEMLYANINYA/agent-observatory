@@ -180,6 +180,7 @@ class ServiceExposureFirewallIntegrationTests(unittest.TestCase):
             include_docker=False,
             include_firewall=True,
             include_firewall_rules=True,
+            include_process_principals=True,
         )
 
 
