@@ -25,12 +25,25 @@ class FixtureCAncestryTests(unittest.TestCase):
             command_line=command_line,
         )
 
-    def _capture(self, *, keep_parent_after: bool = False, reuse_child: bool = False):
-        root = self._process(
+    def _capture(
+        self,
+        *,
+        keep_parent_after: bool = False,
+        reuse_child: bool = False,
+        reuse_root: bool = False,
+    ):
+        root_before = self._process(
             100,
             50,
             "Gemini.exe",
             100.0,
+            executable_path=r"C:\Users\test\AppData\Local\Google\Gemini\Gemini.exe",
+        )
+        root_after = self._process(
+            100,
+            50,
+            "Gemini.exe",
+            101.0 if reuse_root else 100.0,
             executable_path=r"C:\Users\test\AppData\Local\Google\Gemini\Gemini.exe",
         )
         powershell = self._process(
@@ -55,12 +68,12 @@ class FixtureCAncestryTests(unittest.TestCase):
             executable_path=r"C:\Python312\python.exe",
         )
 
-        processes_after = [root, child_after]
+        processes_after = [root_after, child_after]
         if keep_parent_after:
             processes_after.insert(1, powershell)
 
         return WindowsCapture(
-            processes_before=(root, powershell, child_before),
+            processes_before=(root_before, powershell, child_before),
             tcp_connections=(),
             processes_after=tuple(processes_after),
             process_before_interval=CaptureInterval(1_000.0, 1_001.0),
@@ -98,6 +111,15 @@ class FixtureCAncestryTests(unittest.TestCase):
         with self.assertRaisesRegex(FixtureContractError, "same process instance"):
             evaluate_fixture_capture(
                 self._capture(reuse_child=True),
+                agent_name="Gemini",
+                powershell_pid=200,
+                child_pid=300,
+            )
+
+    def test_agent_root_must_remain_same_stable_process_instance(self) -> None:
+        with self.assertRaisesRegex(FixtureContractError, "agent root"):
+            evaluate_fixture_capture(
+                self._capture(reuse_root=True),
                 agent_name="Gemini",
                 powershell_pid=200,
                 child_pid=300,
