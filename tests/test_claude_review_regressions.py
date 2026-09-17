@@ -2,7 +2,7 @@ import io
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import closing, redirect_stderr
 from pathlib import Path
 
 from agent_observatory.analysis import compare_streams
@@ -40,8 +40,9 @@ class ClaudeReviewRegressionTests(unittest.TestCase):
     def test_evidence_graph_does_not_initialize_foreign_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db = Path(temp_dir) / "foreign.sqlite3"
-            with sqlite3.connect(db) as connection:
+            with closing(sqlite3.connect(db)) as connection:
                 connection.execute("CREATE TABLE sentinel(value TEXT)")
+                connection.commit()
 
             before = db.read_bytes()
             stderr = io.StringIO()
@@ -50,7 +51,7 @@ class ClaudeReviewRegressionTests(unittest.TestCase):
                     ["--db", str(db), "show"]
                 )
 
-            with sqlite3.connect(db) as connection:
+            with closing(sqlite3.connect(db)) as connection:
                 objects = tuple(
                     row[0]
                     for row in connection.execute(
@@ -222,8 +223,8 @@ class ClaudeReviewRegressionTests(unittest.TestCase):
         self.assertEqual(len(item.changed), 1)
         before_fact = item.changed[0][1]
         after_fact = item.changed[0][2]
-        self.assertIn('"event_version":1', before_fact)
-        self.assertIn('"event_version":2', after_fact)
+        self.assertIn('\"event_version\":1', before_fact)
+        self.assertIn('\"event_version\":2', after_fact)
 
 
 if __name__ == "__main__":
