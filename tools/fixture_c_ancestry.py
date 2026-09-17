@@ -302,6 +302,8 @@ def _wait_for_after_snapshot(
 
 
 def _fixture_command(repo_root: Path, session_dir: Path) -> str:
+    repo_root = repo_root.resolve()
+    session_dir = session_dir.resolve()
     argv = [
         "powershell.exe",
         "-NoProfile",
@@ -361,7 +363,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     repo_root = Path(__file__).resolve().parents[1]
-    session_dir = args.session_root / f"{_utc_stamp()}-{agent_name.casefold()}-{uuid4().hex[:8]}"
+    session_dir = (
+        args.session_root
+        / f"{_utc_stamp()}-{agent_name.casefold()}-{uuid4().hex[:8]}"
+    ).resolve()
     session_dir.mkdir(parents=True, exist_ok=False)
     ready_path = session_dir / "ready.json"
     release_path = session_dir / "release.signal"
@@ -382,9 +387,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"EXP-003 Fixture C session: {session_dir}")
     print()
-    print(f"Ask {agent_name} to execute this exact command:")
+    print(f"Ask {agent_name} to execute this exact command unchanged:")
     print(command)
     print()
+    print("Do not rewrite, escape, or normalize any path in that command.")
     print("Waiting for PowerShell intermediary and harmless child...")
 
     try:
@@ -438,9 +444,6 @@ def main(argv: list[str] | None = None) -> int:
             hash_executables=False,
         )
 
-        # Validate the production adapter output before persistence. A failed
-        # fixture contract must not commit a misleading stream and only then
-        # discover the mismatch.
         _fixture_relationship_event(batch, child_pid)
 
         store = EventStore(args.db)
