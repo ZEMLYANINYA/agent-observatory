@@ -41,13 +41,14 @@ The observer synchronizes the capture instead of relying on timing luck:
 1. wait until PowerShell and child are both visible inside the requested agent's pre-capture application tree;
 2. capture `processes_before`;
 3. create `release.signal`;
-4. wait until PowerShell is gone while the child remains the same process instance;
+4. wait until PowerShell is gone while both the requested agent root and child remain the same process instances;
 5. capture `processes_after`;
 6. construct a `WindowsCapture` with no TCP evidence by design;
 7. validate `build_capture_parent_relations()`;
 8. pass the capture through `windows_capture_event_batch()`;
-9. atomically persist the batch to a dedicated EventStore stream;
-10. verify the persisted child relationship event is `valid / parent_observed_before_only`.
+9. validate the production adapter batch before persistence;
+10. atomically persist the validated batch to a dedicated EventStore stream;
+11. verify the stored child relationship remains `valid / parent_observed_before_only`.
 
 The observer always creates `child-stop.signal` during cleanup so the harmless child exits without requiring a force kill.
 
@@ -85,14 +86,14 @@ Ask the selected AI desktop agent to execute that command unchanged. Do not run 
 
 All of the following must be true:
 
-1. the requested AI application root is discovered in `processes_before`;
+1. the requested AI application root is discovered in `processes_before` and remains the same stable process instance in `processes_after`;
 2. the PowerShell intermediary and harmless child both belong to that pre-capture application tree;
 3. the child's observed PPID equals the PowerShell PID;
 4. PowerShell is absent from `processes_after`;
 5. the child remains the same stable process instance across the capture;
 6. `build_capture_parent_relations()` returns `VALID / PARENT_OBSERVED_BEFORE_ONLY` for the child;
-7. `windows_capture_event_batch()` emits exactly one persisted relationship event for that child with the same state/basis;
-8. the EventStore append succeeds as a new stream.
+7. `windows_capture_event_batch()` contains exactly one matching relationship event with the same state/basis before anything is committed;
+8. the EventStore append succeeds as a new stream and preserves that relationship event.
 
 A PASS means only that the ancestry evidence survived an exited intermediary correctly.
 
@@ -126,13 +127,16 @@ A successful `result.json` records the selected agent root PID, PowerShell PID, 
 The fixture fails instead of guessing when any required observation is missing or ambiguous, including:
 
 - PowerShell or child absent from the before snapshot;
+- intermediary PID does not identify `powershell.exe`;
 - child PPID does not equal PowerShell PID;
 - fixture processes are not in the requested agent tree;
 - more than one target-agent root contains the fixture processes;
+- target agent root disappears or changes process identity;
 - PowerShell remains present after release;
 - child disappears or its PID is reused;
 - relationship state/basis is not the expected historical-parent evidence;
-- persisted EventStore relationship does not match the evaluated relation.
+- production adapter batch does not contain the expected relationship before persistence;
+- persisted EventStore relationship does not match the validated batch.
 
 Ctrl+C records the local fixture result as `interrupted` and still signals both release and child cleanup.
 
@@ -143,4 +147,5 @@ Ctrl+C records the local fixture result as `interrupted` and still signals both 
 - expected historical-parent relation;
 - parent still alive after release;
 - child PID reuse;
+- target agent root PID reuse;
 - fixture processes outside the requested agent tree.
