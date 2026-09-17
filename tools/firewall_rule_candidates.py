@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        store = EventStore(args.db)
+        store = EventStore(args.db, read_only=True)
         stream_id = _resolve_stream_id(store, args.stream_id)
         correlation = correlate_firewall_rule_candidates(store, stream_id)
     except Exception as exc:
