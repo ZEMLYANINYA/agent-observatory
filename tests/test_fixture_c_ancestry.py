@@ -1,10 +1,12 @@
 import base64
+import tempfile
 import unittest
 from pathlib import Path
 
 from agent_observatory.endpoint.models import ProcessSnapshot
 from agent_observatory.endpoint.windows_capture import CaptureInterval, WindowsCapture
 from tools.fixture_c_ancestry import (
+    DEFAULT_SESSION_ROOT,
     FixtureContractError,
     _fixture_command,
     evaluate_fixture_capture,
@@ -86,6 +88,12 @@ class FixtureCAncestryTests(unittest.TestCase):
             network_interval=CaptureInterval(1_001.0, 1_002.0),
             process_after_interval=CaptureInterval(1_002.0, 1_003.0),
         )
+
+    def test_default_session_root_uses_system_temp_directory(self) -> None:
+        expected = Path(tempfile.gettempdir()) / "agent-observatory-fixture-c"
+
+        self.assertEqual(DEFAULT_SESSION_ROOT, expected)
+        self.assertTrue(DEFAULT_SESSION_ROOT.is_absolute())
 
     def test_fixture_command_encodes_paths_instead_of_exposing_them(self) -> None:
         repo_root = Path("relative_repo_тест")
