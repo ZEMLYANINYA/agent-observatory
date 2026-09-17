@@ -85,12 +85,6 @@ class EventStore:
     def _initialize(self) -> None:
         with self._connect() as connection:
             if self.read_only:
-                journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
-                if str(journal_mode).casefold() != "wal":
-                    raise EventStoreSchemaError(
-                        "EventStore requires WAL journal mode, got "
-                        f"{journal_mode!r}"
-                    )
                 meta_exists = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                     (_META_TABLE,),
@@ -100,7 +94,15 @@ class EventStore:
                         "Existing SQLite file is not an EventStore: "
                         "event_store_meta table is missing"
                     )
+
                 self._validate_existing_schema(connection)
+
+                journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+                if str(journal_mode).casefold() != "wal":
+                    raise EventStoreSchemaError(
+                        "EventStore requires WAL journal mode, got "
+                        f"{journal_mode!r}"
+                    )
                 return
 
             journal_mode = connection.execute(
