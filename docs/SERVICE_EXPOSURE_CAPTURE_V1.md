@@ -1,8 +1,8 @@
 # Service Exposure Capture v1
 
-Service Exposure Capture v1 is the live collector layer built on top of `SERVICE_EXPOSURE_EVIDENCE_V1`.
+Service Exposure Capture v1 is the live collector layer for service-exposure evidence.
 
-Its purpose is to persist point-in-time Windows TCP listener evidence, Docker host-port publication evidence, and explicit collector-completeness metadata in one append-only EventStore stream.
+It persists point-in-time Windows listener, process-principal, Windows service, firewall context/rule, and Docker publication evidence in one append-only EventStore stream together with explicit collector-completeness metadata.
 
 The governing rule remains:
 
@@ -13,37 +13,32 @@ reachable != unauthenticated
 reachable != exploitable
 ```
 
-## Why a capture manifest exists
+## Current live collectors
 
-An empty evidence set is ambiguous unless collection completeness is recorded.
-
-These two situations are not equivalent:
+The production CLI currently requests:
 
 ```text
-Docker collection succeeded and observed 0 published ports
-Docker collection failed before publication evidence could be observed
+windows_tcp_listeners
+windows_listener_process_principals
+windows_listener_services
+windows_firewall_context
+windows_firewall_rules
+docker_published_ports
 ```
 
-Without a manifest both cases would produce zero `DOCKER_PORT_PUBLISHED` events.
+Docker can be explicitly skipped.
 
-Service Exposure Capture v1 therefore persists exactly one:
+Process-principal collection is limited to listener processes that were already attributed to a stable process instance by the bracketed Windows capture.
+
+## Capture manifest
+
+Every live capture that reaches EventStore persistence ends with exactly one:
 
 ```text
 SERVICE_EXPOSURE_CAPTURE_MANIFEST
 ```
 
-for every live capture stream that reaches EventStore append.
-
-## Collector statuses
-
-Current collectors are:
-
-```text
-windows_tcp_listeners
-docker_published_ports
-```
-
-Each collector report uses one status:
+The manifest distinguishes:
 
 ```text
 succeeded
@@ -59,8 +54,6 @@ A failed or skipped collector has:
 record_count = null
 ```
 
-This prevents a collection failure from masquerading as a successful zero observation.
-
 Failed collectors also preserve:
 
 ```text
@@ -68,213 +61,170 @@ error_type
 error_message
 ```
 
-Explicit Docker skipping is represented as `skipped`, not `failed`.
+`partial=true` means at least one requested collector failed. It does not invalidate facts collected successfully by other collectors.
 
-## Manifest payload
+## Principal completeness contract
 
-Current shape:
+`WINDOWS_PROCESS_PRINCIPAL_OBSERVED` is optional source evidence, but when principal facts are persisted their manifest report must agree with them.
 
-```json
-{
-  "capture_kind": "service_exposure",
-  "partial": false,
-  "collectors": [
-    {
-      "collector": "windows_tcp_listeners",
-      "status": "succeeded",
-      "record_count": 18,
-      "observation_basis": "windows_get_nettcpconnection_snapshot",
-      "error_type": null,
-      "error_message": null
-    },
-    {
-      "collector": "docker_published_ports",
-      "status": "succeeded",
-      "record_count": 3,
-      "observation_basis": "docker_inspect_running_container",
-      "error_type": null,
-      "error_message": null
-    }
-  ]
-}
-```
-
-`partial=true` means at least one requested collector failed.
-
-It does not mean the surviving evidence is invalid. It means the stream is incomplete with respect to the requested collection set.
-
-## Best-effort collection, atomic persistence
-
-Collectors run independently.
-
-For example, if Docker collection fails but Windows listener collection succeeds:
+Persistence rejects a capture when:
 
 ```text
-Windows listener facts are preserved
-Docker facts are absent
-manifest records Docker failure
-partial = true
+principal facts exist without windows_listener_process_principals report
+principal report count differs from persisted principal observations
+failed/skipped principal report carries principal facts
+collector report names are duplicated
 ```
 
-The resulting facts and manifest are appended together through one EventStore `append_many()` transaction.
+This prevents missing principal evidence from being represented as a successful empty collection.
 
-This separates two concerns:
+A principal resolution failure is itself preserved as evidence. For example:
 
 ```text
-collector execution can be partial
-EventStore persistence is atomic
+resolution_state = unresolved
+get_owner_sid_return_value = 2
+resolution_reason = access_denied
 ```
+
+No SID is guessed for protected system processes.
+
+## Listener attribution
+
+The production live capture uses the existing Windows process/TCP/process bracket.
+
+When the same process instance is present across the bracket, listener evidence contains:
+
+```text
+owner_identity_basis = stable_process_instance
+process = { pid, started_at }
+process_name
+executable_path, when available
+```
+
+If stable process attribution cannot be established, the listener remains unresolved instead of being upgraded from PID alone.
+
+The lower-level `service_exposure_event_batch(...)` helper still supports explicit unbracketed TCP inventories and therefore preserves PID-only semantics there.
+
+## Process principal evidence
+
+For bracket-stable listener processes, the optional principal collector invokes:
+
+```text
+Win32_Process.GetOwnerSid
+```
+
+and performs another process snapshot after the SID query.
+
+The SID is attached only when the same `(pid, started_at)` process instance remains stable across the query.
+
+This evidence is later used by firewall candidate correlation for the firewall rule `Owner` condition.
+
+## Windows service evidence
+
+Running `Win32_Service` records are collected for listener process IDs and then verified against a fresh process snapshot.
+
+A service event tied to the same process instance means only that the service is hosted in that observed process instance.
+
+It does not prove that a particular service owns a particular socket, especially for shared service-host processes.
+
+## Windows Firewall evidence
+
+The capture persists two independent firewall evidence surfaces:
+
+```text
+WINDOWS_FIREWALL_PROFILE_OBSERVED
+WINDOWS_NETWORK_PROFILE_OBSERVED
+WINDOWS_FIREWALL_RULE_OBSERVED
+```
+
+Firewall profile defaults are context only.
+
+Firewall rule evidence v2 preserves the expanded ActiveStore condition surface, including owner, status, mapping flags, dynamic target, security-filter principals, authentication/encryption fields, addresses, ports, program, package, service, and interface filters.
+
+These are source facts. The capture layer does not decide whether a listener is allowed or blocked.
+
+## Candidate correlation is a separate analysis layer
+
+`analysis.firewall_rule_candidates` correlates listener evidence with firewall rule evidence conservatively.
+
+Its statuses are:
+
+```text
+CANDIDATE_MATCH
+NO_CANDIDATE
+AMBIGUOUS
+```
+
+These statuses describe source compatibility only.
+
+They are not effective Windows Firewall verdicts and do not establish reachability.
+
+A v1 firewall rule event remains readable, but because it predates the expanded rule condition surface it retains:
+
+```text
+RULE_CONDITION_SURFACE = unknown
+```
+
+and cannot become a fully known candidate match merely because newer principal evidence exists in the same stream.
 
 ## Observation times
 
-Windows listener collection and Docker inspection are not simultaneous.
+Collectors are not treated as simultaneous.
 
-Successful collector outputs therefore keep separate observation anchors:
+The live capture keeps separate observation anchors for listener, principal, service, firewall source inventory, Docker, and the final manifest where the underlying collector provides an appropriate capture interval or point-in-time anchor.
 
-```text
-listener_observed_at
-docker_observed_at
-```
-
-The manifest has its own later observation time representing completion of the collector run.
-
-v1 does not manufacture per-record timestamp precision that the source collectors do not provide.
+No per-record precision is invented when the source cannot provide it.
 
 ## Live CLI
 
-The operator entry point is:
+Operator entry point:
 
 ```text
 tools/service_exposure_capture.py
 ```
 
-Default behavior collects both Windows listeners and Docker published ports.
-
 Example:
 
 ```powershell
 python .\tools\service_exposure_capture.py `
-  --db .\.local\service-exposure-v1-live.sqlite3 `
+  --db .\.local\service-exposure-live.sqlite3 `
   --details
 ```
 
-Docker can be explicitly skipped:
+Docker can be skipped explicitly:
 
 ```powershell
 python .\tools\service_exposure_capture.py `
-  --db .\.local\service-exposure-v1-live.sqlite3 `
-  --skip-docker
+  --db .\.local\service-exposure-live.sqlite3 `
+  --skip-docker `
+  --details
 ```
-
-The manifest records that state as `skipped`.
 
 ## Exit codes
 
-Current CLI meanings are:
-
 ```text
-0  all requested collectors succeeded, or a collector was explicitly skipped
+0  requested collectors succeeded, or an optional collector was explicitly skipped
 1  fatal capture or EventStore error prevented normal persistence
-2  persisted partial capture because at least one requested collector failed
+2  partial capture was persisted because at least one requested collector failed
 3  persisted-stream verification failed
 ```
 
-A partial capture is intentionally persisted before returning code `2`.
+## Event ordering
 
-## Human output
-
-The CLI prints:
+The live batch is persisted deterministically as:
 
 ```text
-collector status and record counts
-EventStore event counts
-bind-scope counts
-semantic limitations
-```
-
-With `--details` it also prints the observed listener and Docker publication facts.
-
-The output explicitly states that bind scope is address topology only and that no remote reachability, authentication, or exploitability is inferred.
-
-## Bind scope remains descriptive
-
-The live capture reuses the evidence-layer vocabulary:
-
-```text
-loopback
-wildcard
-specific
-unknown
-```
-
-For example:
-
-```text
-0.0.0.0:11434 scope=wildcard
-```
-
-means only that the observed listener was bound to an unspecified IPv4 address at the snapshot time.
-
-It does not establish:
-
-```text
-LAN reachability
-Internet reachability
-firewall allowance
-service identity
-lack of authentication
-vulnerability
-exploitability
-```
-
-## PID attribution remains limited
-
-Windows listener evidence still carries:
-
-```text
-owner_pid
-owner_identity_basis = pid_only_snapshot
-```
-
-The live capture does not upgrade a raw owning PID into a stable `PID + started_at` process identity.
-
-That requires a later bracketed attribution collector.
-
-## Docker publication remains Docker evidence
-
-A `DOCKER_PORT_PUBLISHED` event means Docker reported a host-port mapping for a running container.
-
-It does not by itself prove that a corresponding Windows listener is visible, that traffic reaches the container, or that the application behind the publication accepts unauthenticated requests.
-
-Future relationship logic may correlate publication and listener observations, but that correlation must remain explicit and evidence-bounded.
-
-## EventStore stream shape
-
-A successful non-empty stream is typically:
-
-```text
-TCP_LISTENER_OBSERVED ...
-DOCKER_PORT_PUBLISHED ...
+TCP_LISTENER_OBSERVED
+WINDOWS_PROCESS_PRINCIPAL_OBSERVED
+WINDOWS_SERVICE_OBSERVED
+WINDOWS_FIREWALL_PROFILE_OBSERVED
+WINDOWS_NETWORK_PROFILE_OBSERVED
+WINDOWS_FIREWALL_RULE_OBSERVED
+DOCKER_PORT_PUBLISHED
 SERVICE_EXPOSURE_CAPTURE_MANIFEST
 ```
 
-A successful zero-record capture is still represented:
-
-```text
-SERVICE_EXPOSURE_CAPTURE_MANIFEST
-```
-
-with both successful collector counts equal to zero.
-
-A partial capture can likewise contain only surviving facts plus the manifest.
-
-## Current Graph behavior
-
-Evidence Graph v1 does not yet project service-exposure events into dedicated service/listener/container nodes.
-
-Until that design is introduced, the events remain source-accounted through the existing fallback projection-note behavior.
-
-The capture manifest is collection metadata and must not be interpreted as service behavior.
+Groups with zero observations are simply absent. The manifest remains present.
 
 ## Non-goals
 
@@ -282,14 +232,13 @@ Service Exposure Capture v1 does not perform:
 
 ```text
 port-number service identification
-Redis identification
-Ollama identification
-firewall evaluation
 remote probing
-HTTP/API requests
+HTTP/API interrogation
 authentication checks
 vulnerability checks
 exploit attempts
+effective Windows Firewall disposition
+reachability verdicts
 severity scoring
 anomaly classification
 automatic blocking
@@ -300,5 +249,6 @@ automatic blocking
 ```text
 Record what was collected.
 Record whether collection succeeded.
+Tie identity to stable process instances.
 Never turn missing evidence into a negative fact.
 ```
