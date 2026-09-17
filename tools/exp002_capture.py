@@ -16,7 +16,6 @@ from agent_observatory.endpoint.windows_capture import (
     attributable_tcp_connections,
     collect_windows_capture,
     rejected_tcp_connections,
-    stable_processes,
 )
 from agent_observatory.endpoint.windows_snapshot import collect_application_snapshots
 
@@ -164,8 +163,7 @@ def _format_root_candidates(snapshots) -> str:
 
 def build_evidence(target: str, state: str) -> dict[str, object]:
     capture = collect_windows_capture()
-    stable = stable_processes(capture)
-    snapshots = collect_application_snapshots(stable)
+    snapshots = collect_application_snapshots(capture.processes_before)
     attributable = attributable_tcp_connections(capture)
 
     if target.casefold() == "all":
@@ -531,6 +529,28 @@ def _append_event(
     _persist_transition(path, session)
 
 
+def _interrupt_transition(
+    session: dict[str, object],
+    path: Path,
+    *,
+    query_origin_ns: int | None,
+) -> int:
+    interrupted_ns = time.monotonic_ns()
+    session["events"].append(
+        _event_payload(
+            "INTERRUPTED",
+            monotonic_ns=interrupted_ns,
+            query_origin_ns=query_origin_ns,
+            source="operator",
+        )
+    )
+    session["status"] = "interrupted"
+    session["finished_at"] = _utc_now_iso()
+    _persist_transition(path, session)
+    print(f"\nSession interrupted; partial evidence preserved: {path}")
+    return 130
+
+
 def _wait_until_monotonic(target_ns: int) -> None:
     while True:
         remaining = (target_ns - time.monotonic_ns()) / 1_000_000_000
@@ -583,22 +603,29 @@ def run_transition_query(
     }
     _persist_transition(path, session)
 
-    print(f"EXP-002 transition session: {path}")
-    print()
-    print(f"1. Start {target} and let it settle.")
-    input("2. Press ENTER when the application is ready for the pre-query capture... ")
+    try:
+        print(f"EXP-002 transition session: {path}")
+        print()
+        print(f"1. Start {target} and let it settle.")
+        input("2. Press ENTER when the application is ready for the pre-query capture... ")
 
-    _append_observation(
-        session,
-        path,
-        target=target,
-        phase="PRE_QUERY_IDLE",
-        query_origin_ns=None,
-    )
+        _append_observation(
+            session,
+            path,
+            target=target,
+            phase="PRE_QUERY_IDLE",
+            query_origin_ns=None,
+        )
 
-    print()
-    print(f"3. Send the test prompt in {target}.")
-    input("4. Press ENTER immediately after sending the prompt... ")
+        print()
+        print(f"3. Send the test prompt in {target}.")
+        input("4. Press ENTER immediately after sending the prompt... ")
+    except KeyboardInterrupt:
+        return _interrupt_transition(
+            session,
+            path,
+            query_origin_ns=None,
+        )
 
     query_origin_ns = time.monotonic_ns()
     _append_event(
@@ -682,20 +709,11 @@ def run_transition_query(
             )
 
     except KeyboardInterrupt:
-        interrupted_ns = time.monotonic_ns()
-        session["events"].append(
-            _event_payload(
-                "INTERRUPTED",
-                monotonic_ns=interrupted_ns,
-                query_origin_ns=query_origin_ns,
-                source="operator",
-            )
+        return _interrupt_transition(
+            session,
+            path,
+            query_origin_ns=query_origin_ns,
         )
-        session["status"] = "interrupted"
-        session["finished_at"] = _utc_now_iso()
-        _persist_transition(path, session)
-        print(f"\nSession interrupted; partial evidence preserved: {path}")
-        return 130
 
     session["status"] = "complete"
     session["finished_at"] = _utc_now_iso()
