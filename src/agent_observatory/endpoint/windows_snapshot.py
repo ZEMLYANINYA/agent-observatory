@@ -154,9 +154,10 @@ def filter_application_snapshots_by_process_instances(
     during a bracketing capture, silently dropping an otherwise stable child.
 
     ``processes`` therefore acts only as an instance-level inclusion set over
-    already-derived snapshots. Process identity is matched with the same
-    capture identity key used by the bracketing stability guard, not by PID
-    alone.
+    already-derived snapshots. The application root itself must also be in that
+    inclusion set, preserving the existing stable-root contract. Process
+    identity is matched with the same capture identity key used by the
+    bracketing stability guard, not by PID alone.
     """
 
     allowed_identities = {
@@ -166,13 +167,15 @@ def filter_application_snapshots_by_process_instances(
     filtered: list[ApplicationSnapshot] = []
 
     for snapshot in snapshots:
+        root_identity = capture_identity_key(snapshot.application.root_process)
+        if root_identity not in allowed_identities:
+            continue
+
         retained = tuple(
             process
             for process in snapshot.processes
             if capture_identity_key(process) in allowed_identities
         )
-        if not retained:
-            continue
         filtered.append(
             ApplicationSnapshot(
                 application=snapshot.application,
