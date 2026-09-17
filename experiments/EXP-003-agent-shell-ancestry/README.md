@@ -56,7 +56,11 @@ The observer always creates `child-stop.signal` during cleanup so the harmless c
 
 ## Safety / scope
 
-The fixture intentionally performs no network request, privilege elevation, persistence, credential access, file modification outside its `.local/fixture-c/` session directory, or destructive action.
+The fixture intentionally performs no network request, privilege elevation, persistence, credential access, or destructive action.
+
+Handshake/session artifacts are written under the operating system temporary directory by default. On Windows this resolves through Python's standard temporary-directory selection and was validated against the Codex runner, which could not write the handshake under the repository `.local` directory but could write under the user temp directory.
+
+The EventStore remains `.local/fixture-c.sqlite3` by default because it is written by the observer process, not the agent-launched PowerShell process.
 
 Raw command lines are not persisted in EventStore. The normal process event adapter stores only the command-line SHA-256 digest.
 
@@ -88,6 +92,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64>
 
 Ask the selected AI desktop agent to execute that command unchanged. Do not ask it to decode, inspect, normalize, or rewrite the payload. Do not run the printed command manually from the observer terminal, because then PowerShell will not be evidence of agent ancestry.
 
+`--session-root` remains available for controlled overrides, but the normal default is the system temporary directory plus `agent-observatory-fixture-c`.
+
 ## PASS criteria
 
 All of the following must be true:
@@ -105,10 +111,10 @@ A PASS means only that the ancestry evidence survived an exited intermediary cor
 
 ## Outputs
 
-Default session directory:
+Default session directory on Windows resolves to the user's system temporary directory, for example:
 
 ```text
-.local/fixture-c/<timestamp>-<agent>-<id>/
+%TEMP%\agent-observatory-fixture-c\<timestamp>-<agent>-<id>\
 ```
 
 Session artifacts:
@@ -150,6 +156,7 @@ Ctrl+C records the local fixture result as `interrupted` and still signals both 
 
 `tests/test_fixture_c_ancestry.py` covers:
 
+- system-temp handshake default;
 - encoded command transport round-trip, including underscores and Unicode path content;
 - expected historical-parent relation;
 - parent still alive after release;
