@@ -69,6 +69,7 @@ _FIREWALL_RULE_V2_FIELDS = {
     "remote_users",
     "remote_machines",
 }
+_ProcessKey = tuple[int, float]
 
 
 def _strings(value: object) -> tuple[str, ...]:
@@ -263,13 +264,19 @@ def _package_result(values: tuple[str, ...]) -> _DimensionResult:
     return _DimensionResult(True, False)
 
 
-def _rule_identity_result(value: object) -> _DimensionResult:
+def _owner_result(value: object, owner_sids: tuple[str, ...]) -> _DimensionResult:
     if value is None:
         return _DimensionResult(True, True)
     text = str(value).strip()
     if not text or text.casefold() in _ANY_VALUES:
         return _DimensionResult(True, True)
-    return _DimensionResult(True, False)
+
+    normalized = {sid.strip().casefold() for sid in owner_sids if sid.strip()}
+    if not normalized:
+        return _DimensionResult(True, False)
+    if len(normalized) != 1:
+        return _DimensionResult(True, False)
+    return _DimensionResult(text.casefold() in normalized, True)
 
 
 def _constraint_result(
@@ -310,16 +317,55 @@ def _condition_surface_result(rule: StoredEvent) -> _DimensionResult:
     return _DimensionResult(True, True)
 
 
-def _service_names_by_pid(events: tuple[StoredEvent, ...]) -> dict[int, tuple[str, ...]]:
-    names: dict[int, set[str]] = {}
+def _process_key(payload: dict[str, object]) -> _ProcessKey | None:
+    process = payload.get("process")
+    if not isinstance(process, dict):
+        return None
+    pid = process.get("pid")
+    started_at = process.get("started_at")
+    if isinstance(pid, bool) or not isinstance(pid, int):
+        return None
+    if isinstance(started_at, bool) or not isinstance(started_at, (int, float)):
+        return None
+    return (pid, float(started_at))
+
+
+def _service_names_by_process(
+    events: tuple[StoredEvent, ...],
+) -> dict[_ProcessKey, tuple[str, ...]]:
+    names: dict[_ProcessKey, set[str]] = {}
     for event in events:
         if event.event_type is not EventType.WINDOWS_SERVICE_OBSERVED:
             continue
-        pid = event.payload.get("process_id")
+        if event.payload.get("process_attribution_state") != "attributed":
+            continue
+        key = _process_key(event.payload)
         name = event.payload.get("service_name")
-        if isinstance(pid, int) and not isinstance(pid, bool) and isinstance(name, str) and name:
-            names.setdefault(pid, set()).add(name)
-    return {pid: tuple(sorted(values, key=str.casefold)) for pid, values in names.items()}
+        if key is not None and isinstance(name, str) and name:
+            names.setdefault(key, set()).add(name)
+    return {
+        key: tuple(sorted(values, key=str.casefold))
+        for key, values in names.items()
+    }
+
+
+def _principal_sids_by_process(
+    events: tuple[StoredEvent, ...],
+) -> dict[_ProcessKey, tuple[str, ...]]:
+    sids: dict[_ProcessKey, set[str]] = {}
+    for event in events:
+        if event.event_type is not EventType.WINDOWS_PROCESS_PRINCIPAL_OBSERVED:
+            continue
+        if event.payload.get("resolution_state") != "resolved":
+            continue
+        key = _process_key(event.payload)
+        sid = event.payload.get("owner_sid")
+        if key is not None and isinstance(sid, str) and sid.strip():
+            sids.setdefault(key, set()).add(sid.strip())
+    return {
+        key: tuple(sorted(values, key=str.casefold))
+        for key, values in sids.items()
+    }
 
 
 def _candidate_for_rule(
@@ -329,6 +375,7 @@ def _candidate_for_rule(
     active_categories: tuple[str, ...],
     active_aliases: tuple[str, ...],
     service_names: tuple[str, ...],
+    owner_sids: tuple[str, ...],
 ) -> FirewallRuleCandidate | None:
     payload = rule.payload
     if payload.get("enabled") is not True:
@@ -355,7 +402,7 @@ def _candidate_for_rule(
         ),
         "PACKAGE": _package_result(_strings(payload.get("packages"))),
         "SERVICE": _service_result(_strings(payload.get("services")), service_names),
-        "OWNER": _rule_identity_result(payload.get("owner")),
+        "OWNER": _owner_result(payload.get("owner"), owner_sids),
         "REMOTE_PORT": _remote_scope_result(_strings(payload.get("remote_ports"))),
         "REMOTE_ADDRESS": _remote_scope_result(_strings(payload.get("remote_addresses"))),
         "INTERFACE_ALIAS": _interface_alias_result(
@@ -424,7 +471,8 @@ def correlate_firewall_rule_candidates(
     network_profiles = tuple(
         event for event in events if event.event_type is EventType.WINDOWS_NETWORK_PROFILE_OBSERVED
     )
-    services_by_pid = _service_names_by_pid(events)
+    services_by_process = _service_names_by_process(events)
+    principal_sids_by_process = _principal_sids_by_process(events)
 
     active_categories = tuple(
         sorted(
@@ -458,6 +506,13 @@ def correlate_firewall_rule_candidates(
         ),
     ):
         owner_pid = int(listener.payload.get("owner_pid"))
+        process_key = _process_key(listener.payload)
+        service_names = (
+            () if process_key is None else services_by_process.get(process_key, ())
+        )
+        owner_sids = (
+            () if process_key is None else principal_sids_by_process.get(process_key, ())
+        )
         candidates = tuple(
             candidate
             for rule in rules
@@ -467,7 +522,8 @@ def correlate_firewall_rule_candidates(
                     rule,
                     active_categories=active_categories,
                     active_aliases=active_aliases,
-                    service_names=services_by_pid.get(owner_pid, ()),
+                    service_names=service_names,
+                    owner_sids=owner_sids,
                 )
             )
             is not None
@@ -484,7 +540,9 @@ def correlate_firewall_rule_candidates(
         limitations = (
             "candidate correlation does not compute Windows Firewall precedence or effective disposition",
             "candidate correlation does not prove remote reachability",
-            "restrictive remote peer, principal, package, owner, dynamic-target, and security filters remain unresolved without matching evidence",
+            "restrictive remote peer, package, dynamic-target, and security filters remain unresolved without matching evidence",
+            "owner filters resolve only from principal evidence tied to the same stable process instance",
+            "service filters resolve only from service evidence tied to the same stable process instance",
             "v1 firewall-rule events have an intentionally incomplete condition surface and remain unresolved",
         )
         results.append(
