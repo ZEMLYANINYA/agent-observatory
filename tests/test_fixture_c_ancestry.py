@@ -1,8 +1,13 @@
 import unittest
+from pathlib import Path
 
 from agent_observatory.endpoint.models import ProcessSnapshot
 from agent_observatory.endpoint.windows_capture import CaptureInterval, WindowsCapture
-from tools.fixture_c_ancestry import FixtureContractError, evaluate_fixture_capture
+from tools.fixture_c_ancestry import (
+    FixtureContractError,
+    _fixture_command,
+    evaluate_fixture_capture,
+)
 
 
 class FixtureCAncestryTests(unittest.TestCase):
@@ -80,6 +85,16 @@ class FixtureCAncestryTests(unittest.TestCase):
             network_interval=CaptureInterval(1_001.0, 1_002.0),
             process_after_interval=CaptureInterval(1_002.0, 1_003.0),
         )
+
+    def test_fixture_command_resolves_shared_session_path_absolutely(self) -> None:
+        repo_root = Path("relative-repo")
+        session_dir = Path("relative-session")
+
+        command = _fixture_command(repo_root, session_dir)
+
+        self.assertIn(str(repo_root.resolve()), command)
+        self.assertIn(str(session_dir.resolve()), command)
+        self.assertNotIn("-SessionDir relative-session", command)
 
     def test_stable_child_preserves_before_only_powershell_parent(self) -> None:
         evaluation = evaluate_fixture_capture(
