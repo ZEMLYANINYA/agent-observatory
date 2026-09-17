@@ -180,6 +180,12 @@ class AnalysisContext:
                 "graph_drift.after_stream_id does not match after_graph"
             )
 
+        expected_drift = compare_graphs(self.before_graph, self.after_graph)
+        if self.graph_drift != expected_drift:
+            raise AnalysisContractError(
+                "graph_drift content does not match supplied graph projections"
+            )
+
 
 class AnalysisPass(Protocol):
     """Protocol implemented by deterministic read-only analysis passes."""
