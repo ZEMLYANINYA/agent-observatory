@@ -39,7 +39,11 @@ class FirewallCandidateReviewRegressionTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _network_profile(category: str, alias: str, index: int) -> ObservationEvent:
+    def _network_profile(
+        category: str | None,
+        alias: str | None,
+        index: int,
+    ) -> ObservationEvent:
         return ObservationEvent(
             event_type=EventType.WINDOWS_NETWORK_PROFILE_OBSERVED,
             observed_at=11.0,
@@ -111,21 +115,28 @@ class FirewallCandidateReviewRegressionTests(unittest.TestCase):
     def _manifest(
         *,
         status: str,
-        record_count: int | None,
+        record_count: object,
         include_rule_report: bool = True,
+        collectors_override: object | None = None,
     ) -> ObservationEvent:
-        collectors = []
-        if include_rule_report:
-            collectors.append(
-                {
-                    "collector": "windows_firewall_rules",
-                    "status": status,
-                    "record_count": record_count,
-                    "observation_basis": "test" if status == "succeeded" else None,
-                    "error_type": "RuntimeError" if status == "failed" else None,
-                    "error_message": "fixture failure" if status == "failed" else None,
-                }
-            )
+        collectors: object
+        if collectors_override is not None:
+            collectors = collectors_override
+        else:
+            generated_collectors = []
+            if include_rule_report:
+                generated_collectors.append(
+                    {
+                        "collector": "windows_firewall_rules",
+                        "status": status,
+                        "record_count": record_count,
+                        "observation_basis": "test" if status == "succeeded" else None,
+                        "error_type": "RuntimeError" if status == "failed" else None,
+                        "error_message": "fixture failure" if status == "failed" else None,
+                    }
+                )
+            collectors = generated_collectors
+
         return ObservationEvent(
             event_type=EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
             observed_at=13.0,
@@ -173,6 +184,55 @@ class FirewallCandidateReviewRegressionTests(unittest.TestCase):
             result.listeners[0].status,
             FirewallCandidateStatus.AMBIGUOUS,
         )
+
+    def test_malformed_manifest_collector_shapes_remain_unresolved(self) -> None:
+        malformed_collectors = (
+            {"collector": "windows_firewall_rules"},
+            [
+                {
+                    "collector": "windows_firewall_rules",
+                    "status": "succeeded",
+                    "record_count": 0,
+                },
+                {
+                    "collector": "windows_firewall_rules",
+                    "status": "succeeded",
+                    "record_count": 0,
+                },
+            ],
+            [
+                {
+                    "collector": "windows_firewall_rules",
+                    "status": "succeeded",
+                    "record_count": True,
+                }
+            ],
+        )
+        for collectors in malformed_collectors:
+            with self.subTest(collectors=collectors):
+                result = self._correlate(
+                    self._listener(),
+                    self._network_profile("Public", "Wi-Fi", 10),
+                    self._manifest(
+                        status="succeeded",
+                        record_count=0,
+                        collectors_override=collectors,
+                    ),
+                )
+                listener = result.listeners[0]
+                self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
+                self.assertEqual(listener.candidates, ())
+
+    def test_multiple_manifests_remain_unresolved(self) -> None:
+        result = self._correlate(
+            self._listener(),
+            self._network_profile("Public", "Wi-Fi", 10),
+            self._manifest(status="succeeded", record_count=0),
+            self._manifest(status="succeeded", record_count=0),
+        )
+        listener = result.listeners[0]
+        self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
+        self.assertEqual(listener.candidates, ())
 
     def test_successful_zero_rule_inventory_remains_no_candidate(self) -> None:
         result = self._correlate(
@@ -222,6 +282,27 @@ class FirewallCandidateReviewRegressionTests(unittest.TestCase):
         self.assertIn("PROFILE", listener.candidates[0].compatible_dimensions)
         self.assertIn("INTERFACE_ALIAS", listener.candidates[0].compatible_dimensions)
 
+    def test_missing_category_or_alias_in_network_profile_stays_unknown(self) -> None:
+        cases = (
+            (None, "Ethernet", "Public", ("Any",), "PROFILE"),
+            ("Public", None, "Any", ("Ethernet",), "INTERFACE_ALIAS"),
+        )
+        for category, alias, profile, aliases, expected_unknown in cases:
+            with self.subTest(
+                category=category,
+                alias=alias,
+                expected_unknown=expected_unknown,
+            ):
+                result = self._correlate(
+                    self._listener(),
+                    self._network_profile(category, alias, 10),
+                    self._rule(profile=profile, interface_aliases=aliases),
+                )
+                listener = result.listeners[0]
+                self.assertEqual(listener.status, FirewallCandidateStatus.AMBIGUOUS)
+                self.assertEqual(len(listener.candidates), 1)
+                self.assertIn(expected_unknown, listener.candidates[0].unknown_dimensions)
+
     def test_domain_authenticated_maps_to_domain_firewall_profile(self) -> None:
         result = self._correlate(
             self._listener(),
@@ -242,6 +323,20 @@ class FirewallCandidateReviewRegressionTests(unittest.TestCase):
         listener = result.listeners[0]
         self.assertEqual(listener.status, FirewallCandidateStatus.CANDIDATE_MATCH)
         self.assertIn("PROTOCOL", listener.candidates[0].compatible_dimensions)
+
+    def test_udp_protocol_is_known_incompatible_with_tcp_listener(self) -> None:
+        for protocol in (("UDP",), ("17",)):
+            with self.subTest(protocol=protocol):
+                result = self._correlate(
+                    self._listener(),
+                    self._network_profile("Public", "Wi-Fi", 10),
+                    self._rule(protocol=protocol),
+                )
+                self.assertEqual(
+                    result.listeners[0].status,
+                    FirewallCandidateStatus.NO_CANDIDATE,
+                )
+                self.assertEqual(result.listeners[0].candidates, ())
 
     def test_candidate_inspector_opens_event_store_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
