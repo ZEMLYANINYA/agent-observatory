@@ -23,6 +23,7 @@ from .service_exposure_capture import (
 from .service_exposure_events import (
     docker_published_port_event,
     tcp_listener_event,
+    windows_process_principal_event,
     windows_service_event,
 )
 from .windows_capture_events import (
@@ -71,5 +72,6 @@ __all__ = [
     "windows_firewall_rule_event",
     "windows_firewall_rule_event_batch",
     "windows_network_profile_event",
+    "windows_process_principal_event",
     "windows_service_event",
 ]
