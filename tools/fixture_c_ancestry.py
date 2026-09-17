@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -301,24 +301,33 @@ def _wait_for_after_snapshot(
     raise FixtureContractError(f"timed out waiting for after snapshot: {last_reason}")
 
 
+def _ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _fixture_command(repo_root: Path, session_dir: Path) -> str:
     repo_root = repo_root.resolve()
     session_dir = session_dir.resolve()
-    argv = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(repo_root / "tools" / "fixture_c_intermediate.ps1"),
-        "-SessionDir",
-        str(session_dir),
-        "-PythonExe",
-        sys.executable,
-        "-ChildScript",
-        str(repo_root / "tools" / "fixture_c_child.py"),
-    ]
-    return subprocess.list2cmdline(argv)
+    script = "\n".join(
+        (
+            "$ErrorActionPreference = 'Stop'",
+            (
+                "& "
+                + _ps_single_quote(str(repo_root / "tools" / "fixture_c_intermediate.ps1"))
+                + " -SessionDir "
+                + _ps_single_quote(str(session_dir))
+                + " -PythonExe "
+                + _ps_single_quote(str(Path(sys.executable).resolve()))
+                + " -ChildScript "
+                + _ps_single_quote(str(repo_root / "tools" / "fixture_c_child.py"))
+            ),
+        )
+    )
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return (
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand "
+        + encoded
+    )
 
 
 def _persist_result(path: Path, payload: dict[str, object]) -> None:
@@ -390,7 +399,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Ask {agent_name} to execute this exact command unchanged:")
     print(command)
     print()
-    print("Do not rewrite, escape, or normalize any path in that command.")
+    print("The visible command contains no file-system paths by design.")
+    print("Do not decode, rewrite, escape, or normalize the encoded command.")
     print("Waiting for PowerShell intermediary and harmless child...")
 
     try:
