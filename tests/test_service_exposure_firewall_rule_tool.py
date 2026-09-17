@@ -76,6 +76,7 @@ class ServiceExposureFirewallRuleToolTests(unittest.TestCase):
             include_docker=False,
             include_firewall=True,
             include_firewall_rules=True,
+            include_process_principals=True,
         )
 
     def test_summary_counts_rules_but_details_do_not_dump_rule_names(self) -> None:
