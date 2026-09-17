@@ -70,6 +70,7 @@ WINDOWS_FIREWALL_CONTEXT_OBSERVATION_BASIS = (
 WINDOWS_FIREWALL_RULE_OBSERVATION_BASIS = (
     "windows_get_netfirewallrule_active_store_inbound_with_filters"
 )
+_WINDOWS_PROCESS_PRINCIPAL_COLLECTOR = "windows_listener_process_principals"
 
 
 class CollectorStatus(str, Enum):
@@ -146,6 +147,59 @@ def _failure_report(collector: str, exc: Exception) -> ServiceExposureCollectorR
     )
 
 
+def _collector_reports_by_name(
+    capture: ServiceExposureCapture,
+) -> dict[str, ServiceExposureCollectorReport]:
+    reports: dict[str, ServiceExposureCollectorReport] = {}
+    for report in capture.collector_reports:
+        if report.collector in reports:
+            raise ValueError(
+                f"collector report names must be unique: {report.collector}"
+            )
+        reports[report.collector] = report
+    return reports
+
+
+def _validate_capture_manifest_consistency(capture: ServiceExposureCapture) -> None:
+    """Reject live captures whose principal facts disagree with their manifest.
+
+    The manifest is the completeness contract for optional collectors. Principal
+    evidence is particularly sensitive because a missing SID must remain an
+    explicit unresolved observation or collector failure, never a silent gap.
+    """
+
+    reports = _collector_reports_by_name(capture)
+    principal_report = reports.get(_WINDOWS_PROCESS_PRINCIPAL_COLLECTOR)
+    principal_count = len(capture.windows_process_principals)
+
+    if principal_report is None:
+        if principal_count or capture.principal_observed_at is not None:
+            raise ValueError(
+                "process principal evidence requires a principal collector report"
+            )
+        return
+
+    if principal_report.status is CollectorStatus.SUCCEEDED:
+        if principal_report.record_count != principal_count:
+            raise ValueError(
+                "principal collector record_count must match principal observations"
+            )
+        if principal_count and capture.principal_observed_at is None:
+            raise ValueError(
+                "process principal observations require principal_observed_at"
+            )
+        return
+
+    if principal_count:
+        raise ValueError(
+            "failed/skipped principal collector cannot carry principal observations"
+        )
+    if capture.principal_observed_at is not None:
+        raise ValueError(
+            "failed/skipped principal collector cannot carry principal_observed_at"
+        )
+
+
 def collect_service_exposure_capture(
     *,
     include_docker: bool = True,
@@ -213,7 +267,7 @@ def collect_service_exposure_capture(
         if windows_capture is None or not listeners:
             reports.append(
                 ServiceExposureCollectorReport(
-                    collector="windows_listener_process_principals",
+                    collector=_WINDOWS_PROCESS_PRINCIPAL_COLLECTOR,
                     status=CollectorStatus.SKIPPED,
                     record_count=None,
                 )
@@ -237,7 +291,7 @@ def collect_service_exposure_capture(
             if not target_processes:
                 reports.append(
                     ServiceExposureCollectorReport(
-                        collector="windows_listener_process_principals",
+                        collector=_WINDOWS_PROCESS_PRINCIPAL_COLLECTOR,
                         status=CollectorStatus.SKIPPED,
                         record_count=None,
                     )
@@ -261,7 +315,7 @@ def collect_service_exposure_capture(
                     principal_observed_at = principal_snapshot_finished_at
                     reports.append(
                         ServiceExposureCollectorReport(
-                            collector="windows_listener_process_principals",
+                            collector=_WINDOWS_PROCESS_PRINCIPAL_COLLECTOR,
                             status=CollectorStatus.SUCCEEDED,
                             record_count=len(windows_process_principals),
                             observation_basis=WINDOWS_PROCESS_PRINCIPAL_OBSERVATION_BASIS,
@@ -269,7 +323,7 @@ def collect_service_exposure_capture(
                     )
                 except Exception as exc:
                     reports.append(
-                        _failure_report("windows_listener_process_principals", exc)
+                        _failure_report(_WINDOWS_PROCESS_PRINCIPAL_COLLECTOR, exc)
                     )
 
     if windows_capture is None:
@@ -392,6 +446,8 @@ def service_exposure_manifest_event(
 ) -> ObservationEvent:
     """Persist collector completeness separately from collected service facts."""
 
+    _validate_capture_manifest_consistency(capture)
+
     return ObservationEvent(
         event_type=EventType.SERVICE_EXPOSURE_CAPTURE_MANIFEST,
         observed_at=capture.manifest_observed_at,
@@ -481,6 +537,8 @@ def service_exposure_capture_event_batch(
     stream_id: str,
 ) -> tuple[ObservationEvent, ...]:
     """Build deterministic live-capture facts plus one completeness manifest."""
+
+    _validate_capture_manifest_consistency(capture)
 
     listener_events: tuple[ObservationEvent, ...] = ()
     if capture.listeners:
