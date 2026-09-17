@@ -2,7 +2,7 @@ import io
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import closing, redirect_stderr
 from pathlib import Path
 
 from agent_observatory.analysis import compare_streams
@@ -29,11 +29,12 @@ class HistoricalIntegrityRegressionTests(unittest.TestCase):
     def test_evidence_graph_does_not_mutate_unrelated_sqlite_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "foreign.sqlite3"
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection:
                 connection.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
                 connection.execute("INSERT INTO sentinel(value) VALUES ('keep-me')")
+                connection.commit()
 
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection:
                 before_objects = tuple(
                     connection.execute(
                         "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
@@ -47,7 +48,7 @@ class HistoricalIntegrityRegressionTests(unittest.TestCase):
             with redirect_stderr(stderr):
                 result = evidence_graph_tool.main(["--db", str(path), "show"])
 
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection:
                 after_objects = tuple(
                     connection.execute(
                         "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
@@ -201,8 +202,8 @@ class HistoricalIntegrityRegressionTests(unittest.TestCase):
         )
         self.assertEqual(item.unchanged_count, 0)
         self.assertEqual(len(item.changed), 1)
-        self.assertIn('"event_version":1', item.changed[0][1])
-        self.assertIn('"event_version":2', item.changed[0][2])
+        self.assertIn('\"event_version\":1', item.changed[0][1])
+        self.assertIn('\"event_version\":2', item.changed[0][2])
 
 
 if __name__ == "__main__":
