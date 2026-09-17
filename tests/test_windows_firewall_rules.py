@@ -127,6 +127,10 @@ class WindowsFirewallRuleInventoryTests(unittest.TestCase):
             inventory = collect_windows_firewall_rule_inventory()
 
         runner.assert_called_once()
+        command = runner.call_args.args[0]
+        self.assertIn("Get-NetFirewallSecurityFilter", command)
+        self.assertIn("DynamicTarget", command)
+        self.assertIn("$rule.Owner", command)
         self.assertEqual(len(inventory.rules), 2)
 
     def test_rule_event_is_descriptive_only(self) -> None:
