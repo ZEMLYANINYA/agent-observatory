@@ -1,3 +1,4 @@
+import base64
 import unittest
 from pathlib import Path
 
@@ -86,15 +87,24 @@ class FixtureCAncestryTests(unittest.TestCase):
             process_after_interval=CaptureInterval(1_002.0, 1_003.0),
         )
 
-    def test_fixture_command_resolves_shared_session_path_absolutely(self) -> None:
-        repo_root = Path("relative-repo")
-        session_dir = Path("relative-session")
+    def test_fixture_command_encodes_paths_instead_of_exposing_them(self) -> None:
+        repo_root = Path("relative_repo_тест")
+        session_dir = Path("relative_session_тест")
 
         command = _fixture_command(repo_root, session_dir)
 
-        self.assertIn(str(repo_root.resolve()), command)
-        self.assertIn(str(session_dir.resolve()), command)
-        self.assertNotIn("-SessionDir relative-session", command)
+        prefix = "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand "
+        self.assertTrue(command.startswith(prefix))
+        self.assertNotIn("_", command)
+        self.assertNotIn("\\", command)
+
+        encoded = command[len(prefix) :]
+        decoded = base64.b64decode(encoded).decode("utf-16le")
+
+        self.assertIn(str(repo_root.resolve()), decoded)
+        self.assertIn(str(session_dir.resolve()), decoded)
+        self.assertIn("fixture_c_intermediate.ps1", decoded)
+        self.assertIn("fixture_c_child.py", decoded)
 
     def test_stable_child_preserves_before_only_powershell_parent(self) -> None:
         evaluation = evaluate_fixture_capture(
