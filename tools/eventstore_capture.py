@@ -12,7 +12,7 @@ from agent_observatory.endpoint.windows_capture import (
     WindowsCapture,
     collect_windows_capture,
 )
-from agent_observatory.evidence import append_windows_capture
+from agent_observatory.evidence import windows_capture_event_batch
 from agent_observatory.storage import EventStore, EventType, StoredEvent
 
 
@@ -47,15 +47,18 @@ def capture_into_store(
     hash_executables: bool = True,
     capture_provider: Callable[[], WindowsCapture] = collect_windows_capture,
 ) -> tuple[StoredEvent, ...]:
+    if store.stream_exists(stream_id):
+        raise ValueError(f"stream already exists: {stream_id}")
+
     capture = capture_provider()
-    return append_windows_capture(
-        store,
+    batch = windows_capture_event_batch(
         capture,
         source=source,
         stream_id=stream_id,
         application_names=application_names,
         hash_executables=hash_executables,
     )
+    return store.append_many(batch, require_new_stream=True)
 
 
 def _print_summary(

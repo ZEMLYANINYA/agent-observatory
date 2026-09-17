@@ -32,29 +32,49 @@ class EventStore:
         path: str | Path,
         *,
         busy_timeout_ms: int = 5_000,
+        read_only: bool = False,
     ) -> None:
         self.path = Path(path)
         if str(self.path) == ":memory:":
             raise ValueError("EventStore requires a filesystem-backed SQLite path")
         if busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
+        if not isinstance(read_only, bool):
+            raise TypeError("read_only must be a boolean")
 
         self.busy_timeout_ms = busy_timeout_ms
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
+
+        if self.read_only:
+            if not self.path.is_file():
+                raise FileNotFoundError(f"EventStore does not exist: {self.path}")
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+
         self._initialize()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         """Yield a transactional connection and always close its OS handle."""
 
-        connection = sqlite3.connect(
-            self.path,
-            timeout=max(self.busy_timeout_ms / 1000, 0.001),
-        )
+        if self.read_only:
+            database = f"{self.path.resolve().as_uri()}?mode=ro"
+            connection = sqlite3.connect(
+                database,
+                uri=True,
+                timeout=max(self.busy_timeout_ms / 1000, 0.001),
+            )
+        else:
+            connection = sqlite3.connect(
+                self.path,
+                timeout=max(self.busy_timeout_ms / 1000, 0.001),
+            )
+
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-        connection.execute("PRAGMA synchronous = NORMAL")
+        if not self.read_only:
+            connection.execute("PRAGMA synchronous = NORMAL")
 
         try:
             with connection:
@@ -64,6 +84,27 @@ class EventStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            if self.read_only:
+                meta_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (_META_TABLE,),
+                ).fetchone()
+                if not meta_exists:
+                    raise EventStoreSchemaError(
+                        "Existing SQLite file is not an EventStore: "
+                        "event_store_meta table is missing"
+                    )
+
+                self._validate_existing_schema(connection)
+
+                journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+                if str(journal_mode).casefold() != "wal":
+                    raise EventStoreSchemaError(
+                        "EventStore requires WAL journal mode, got "
+                        f"{journal_mode!r}"
+                    )
+                return
+
             journal_mode = connection.execute(
                 "PRAGMA journal_mode = WAL"
             ).fetchone()[0]
@@ -250,13 +291,42 @@ class EventStore:
     def append_many(
         self,
         events: Iterable[ObservationEvent],
+        *,
+        require_new_stream: bool = False,
     ) -> tuple[StoredEvent, ...]:
+        if self.read_only:
+            raise RuntimeError("cannot append to read-only EventStore")
+        if not isinstance(require_new_stream, bool):
+            raise TypeError("require_new_stream must be a boolean")
+
         prepared = tuple(self._prepare_event(event) for event in events)
         if not prepared:
             return ()
 
+        claimed_stream_id: str | None = None
+        if require_new_stream:
+            stream_ids = {item[4] for item in prepared}
+            if None in stream_ids or len(stream_ids) != 1:
+                raise ValueError(
+                    "require_new_stream requires all events to share one non-null stream_id"
+                )
+            claimed_stream_id = next(iter(stream_ids))
+            assert claimed_stream_id is not None
+
         stored: list[StoredEvent] = []
         with self._connect() as connection:
+            if claimed_stream_id is not None:
+                # Acquire the SQLite write reservation before checking stream occupancy.
+                # Competing capture writers therefore serialize at this boundary:
+                # only one can observe the stream as absent and append its batch.
+                connection.execute("BEGIN IMMEDIATE")
+                occupied = connection.execute(
+                    "SELECT 1 FROM events WHERE stream_id = ? LIMIT 1",
+                    (claimed_stream_id,),
+                ).fetchone()
+                if occupied is not None:
+                    raise ValueError(f"stream already exists: {claimed_stream_id}")
+
             for (
                 event_type,
                 event_version,
@@ -381,6 +451,16 @@ class EventStore:
             ).fetchall()
 
         return tuple(str(row["stream_id"]) for row in rows)
+
+    def stream_exists(self, stream_id: str) -> bool:
+        if not isinstance(stream_id, str) or not stream_id.strip():
+            raise ValueError("stream_id must be a non-empty string")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM events WHERE stream_id = ? LIMIT 1",
+                (stream_id,),
+            ).fetchone()
+        return row is not None
 
     def count_events(self) -> int:
         with self._connect() as connection:

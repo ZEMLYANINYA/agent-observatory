@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        store = EventStore(args.db)
+        store = EventStore(args.db, read_only=True)
         before_stream_id, after_stream_id = _resolve_stream_pair(
             store,
             args.before_stream_id,

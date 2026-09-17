@@ -10,7 +10,10 @@ from .windows_capture import (
     rejected_tcp_connections,
     stable_processes,
 )
-from .windows_snapshot import collect_application_snapshots
+from .windows_snapshot import (
+    collect_application_snapshots,
+    filter_application_snapshots_by_process_instances,
+)
 
 
 def collect_live_snapshot() -> str:
@@ -25,8 +28,9 @@ def collect_live_snapshot() -> str:
         for process in snapshot.processes
     }
 
-    process_snapshots = collect_application_snapshots(
-        stable_processes(capture)
+    process_snapshots = filter_application_snapshots_by_process_instances(
+        observed_snapshots,
+        stable_processes(capture),
     )
     tcp_connections = attributable_tcp_connections(capture)
 

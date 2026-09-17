@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 from .application_models import ApplicationSnapshot
 from .discovery import discover_root_processes
+from .identity import capture_identity_key
 from .models import ProcessSnapshot
 from .process_tree import build_validated_process_tree
 from .roles import classify_process_role
@@ -139,6 +140,50 @@ def collect_application_snapshots(
         )
 
     return tuple(snapshots)
+
+
+def filter_application_snapshots_by_process_instances(
+    snapshots: Iterable[ApplicationSnapshot],
+    processes: Iterable[ProcessSnapshot],
+) -> tuple[ApplicationSnapshot, ...]:
+    """Retain allowed process instances without rebuilding application ancestry.
+
+    Application membership must be derived from the process inventory in which
+    the full tree was observed. Filtering the process inventory first can break
+    a root -> intermediate -> child path when the intermediate process exits
+    during a bracketing capture, silently dropping an otherwise stable child.
+
+    ``processes`` therefore acts only as an instance-level inclusion set over
+    already-derived snapshots. The application root itself must also be in that
+    inclusion set, preserving the existing stable-root contract. Process
+    identity is matched with the same capture identity key used by the
+    bracketing stability guard, not by PID alone.
+    """
+
+    allowed_identities = {
+        capture_identity_key(process)
+        for process in processes
+    }
+    filtered: list[ApplicationSnapshot] = []
+
+    for snapshot in snapshots:
+        root_identity = capture_identity_key(snapshot.application.root_process)
+        if root_identity not in allowed_identities:
+            continue
+
+        retained = tuple(
+            process
+            for process in snapshot.processes
+            if capture_identity_key(process) in allowed_identities
+        )
+        filtered.append(
+            ApplicationSnapshot(
+                application=snapshot.application,
+                processes=retained,
+            )
+        )
+
+    return tuple(filtered)
 
 
 def format_snapshot(
