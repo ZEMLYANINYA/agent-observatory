@@ -115,6 +115,10 @@ def _validate_before_snapshot(
 
     if powershell is None:
         raise FixtureContractError("PowerShell intermediary is missing from before snapshot")
+    if powershell.name.casefold() != "powershell.exe":
+        raise FixtureContractError(
+            f"intermediary PID {powershell_pid} is {powershell.name!r}, expected powershell.exe"
+        )
     if child is None:
         raise FixtureContractError("fixture child is missing from before snapshot")
     if child.ppid != powershell_pid:
@@ -143,6 +147,16 @@ def evaluate_fixture_capture(
         powershell_pid=powershell_pid,
         child_pid=child_pid,
     )
+
+    agent_root_before = snapshot.application.root_process
+    agent_root_after = _process_by_pid(capture.processes_after, agent_root_before.pid)
+    if agent_root_after is None or not same_process_instance(
+        agent_root_before,
+        agent_root_after,
+    ):
+        raise FixtureContractError(
+            "requested agent root did not remain the same stable process instance"
+        )
 
     if _process_by_pid(capture.processes_after, powershell_pid) is not None:
         raise FixtureContractError("PowerShell intermediary is still present after release")
@@ -178,7 +192,7 @@ def evaluate_fixture_capture(
 
     return FixtureEvaluation(
         agent_name=agent_name,
-        agent_root_pid=snapshot.application.root_process.pid,
+        agent_root_pid=agent_root_before.pid,
         powershell_pid=powershell_before.pid,
         powershell_started_at=powershell_before.started_at,
         child_pid=child_before.pid,
@@ -186,6 +200,34 @@ def evaluate_fixture_capture(
         relation_state=relation.state.value,
         relation_basis=relation.basis.value,
     )
+
+
+def _fixture_relationship_event(events, child_pid: int):
+    relationship_events = tuple(
+        event
+        for event in events
+        if (
+            event.event_type is EventType.PROCESS_RELATIONSHIP_OBSERVED
+            and isinstance(event.payload.get("child"), dict)
+            and event.payload["child"].get("pid") == child_pid
+        )
+    )
+    if len(relationship_events) != 1:
+        raise FixtureContractError(
+            "expected exactly one relationship event for fixture child"
+        )
+
+    relationship_event = relationship_events[0]
+    if relationship_event.payload.get("state") != RelationState.VALID.value:
+        raise FixtureContractError("fixture relationship event is not valid")
+    if (
+        relationship_event.payload.get("basis")
+        != RelationBasis.PARENT_OBSERVED_BEFORE_ONLY.value
+    ):
+        raise FixtureContractError(
+            "fixture relationship event did not preserve before-only parent basis"
+        )
+    return relationship_event
 
 
 def _wait_for_ready(path: Path, timeout_seconds: float) -> dict[str, object]:
@@ -345,7 +387,6 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Waiting for PowerShell intermediary and harmless child...")
 
-    child_pid: int | None = None
     try:
         ready = _wait_for_ready(ready_path, args.timeout)
         powershell_pid = int(ready["powershell_pid"])
@@ -396,32 +437,15 @@ def main(argv: list[str] | None = None) -> int:
             application_names=(agent_name,),
             hash_executables=False,
         )
+
+        # Validate the production adapter output before persistence. A failed
+        # fixture contract must not commit a misleading stream and only then
+        # discover the mismatch.
+        _fixture_relationship_event(batch, child_pid)
+
         store = EventStore(args.db)
         stored = store.append_many(batch, require_new_stream=True)
-
-        relationship_events = tuple(
-            event
-            for event in stored
-            if (
-                event.event_type is EventType.PROCESS_RELATIONSHIP_OBSERVED
-                and isinstance(event.payload.get("child"), dict)
-                and event.payload["child"].get("pid") == child_pid
-            )
-        )
-        if len(relationship_events) != 1:
-            raise FixtureContractError(
-                "expected exactly one persisted relationship event for fixture child"
-            )
-        relationship_event = relationship_events[0]
-        if relationship_event.payload.get("state") != RelationState.VALID.value:
-            raise FixtureContractError("persisted fixture relation is not valid")
-        if (
-            relationship_event.payload.get("basis")
-            != RelationBasis.PARENT_OBSERVED_BEFORE_ONLY.value
-        ):
-            raise FixtureContractError(
-                "persisted fixture relation did not preserve before-only parent basis"
-            )
+        relationship_event = _fixture_relationship_event(stored, child_pid)
 
         result.update(
             {
