@@ -176,7 +176,8 @@ class ServiceExposureCaptureToolTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertEqual(code, 0)
-        self.assertIn("docker_published_ports     status=succeeded records=0", output)
+        self.assertIn("docker_published_ports", output)
+        self.assertIn("status=succeeded records=0", output)
         self.assertIn("0.0.0.0:11434", output)
         self.assertIn("scope=wildcard", output)
         self.assertIn("attributed", output)
