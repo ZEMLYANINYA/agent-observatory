@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,7 +28,7 @@ from agent_observatory.evidence import windows_capture_event_batch
 from agent_observatory.storage import EventStore, EventType
 
 
-DEFAULT_SESSION_ROOT = Path(".local") / "fixture-c"
+DEFAULT_SESSION_ROOT = Path(tempfile.gettempdir()) / "agent-observatory-fixture-c"
 DEFAULT_DB_PATH = Path(".local") / "fixture-c.sqlite3"
 DEFAULT_SOURCE = "fixture-c-ancestry"
 
