@@ -22,9 +22,16 @@ class WindowsFirewallRuleSnapshot:
     edge_traversal_policy: str
     policy_store_source_type: str | None
     policy_store_source: str | None
+    owner: str | None
+    primary_status: str | None
+    status: str | None
+    loose_source_mapping: bool | None
+    local_only_mapping: bool | None
     protocol: tuple[str, ...]
     local_ports: tuple[str, ...]
     remote_ports: tuple[str, ...]
+    icmp_types: tuple[str, ...]
+    dynamic_targets: tuple[str, ...]
     local_addresses: tuple[str, ...]
     remote_addresses: tuple[str, ...]
     programs: tuple[str, ...]
@@ -32,6 +39,12 @@ class WindowsFirewallRuleSnapshot:
     services: tuple[str, ...]
     interface_types: tuple[str, ...]
     interface_aliases: tuple[str, ...]
+    authentication: tuple[str, ...]
+    encryption: tuple[str, ...]
+    override_block_rules: tuple[str, ...]
+    local_users: tuple[str, ...]
+    remote_users: tuple[str, ...]
+    remote_machines: tuple[str, ...]
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -47,14 +60,26 @@ class WindowsFirewallRuleSnapshot:
                 raise ValueError(f"{field_name} must be a non-empty string")
         if not isinstance(self.enabled, bool):
             raise TypeError("enabled must be a boolean")
-        for field_name in ("policy_store_source_type", "policy_store_source"):
+        for field_name in (
+            "policy_store_source_type",
+            "policy_store_source",
+            "owner",
+            "primary_status",
+            "status",
+        ):
             value = getattr(self, field_name)
             if value is not None and not isinstance(value, str):
                 raise TypeError(f"{field_name} must be a string or None")
+        for field_name in ("loose_source_mapping", "local_only_mapping"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, bool):
+                raise TypeError(f"{field_name} must be a boolean or None")
         for field_name in (
             "protocol",
             "local_ports",
             "remote_ports",
+            "icmp_types",
+            "dynamic_targets",
             "local_addresses",
             "remote_addresses",
             "programs",
@@ -62,6 +87,12 @@ class WindowsFirewallRuleSnapshot:
             "services",
             "interface_types",
             "interface_aliases",
+            "authentication",
+            "encryption",
+            "override_block_rules",
+            "local_users",
+            "remote_users",
+            "remote_machines",
         ):
             value = getattr(self, field_name)
             if not isinstance(value, tuple) or not all(
@@ -95,6 +126,15 @@ function To-StringArray {
     return @($Value | ForEach-Object { $_.ToString() })
 }
 
+function To-NullableBool {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    $text = $Value.ToString()
+    if ($text -eq 'True') { return $true }
+    if ($text -eq 'False') { return $false }
+    return $null
+}
+
 $startedAt = [DateTime]::UtcNow
 $records = @(
     Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -ErrorAction Stop |
@@ -106,6 +146,7 @@ $records = @(
         $service = @($rule | Get-NetFirewallServiceFilter -ErrorAction Stop)
         $interfaceType = @($rule | Get-NetFirewallInterfaceTypeFilter -ErrorAction Stop)
         $interface = @($rule | Get-NetFirewallInterfaceFilter -ErrorAction Stop)
+        $security = @($rule | Get-NetFirewallSecurityFilter -ErrorAction Stop)
 
         [PSCustomObject]@{
             name = $rule.Name
@@ -117,9 +158,19 @@ $records = @(
             edge_traversal_policy = $rule.EdgeTraversalPolicy.ToString()
             policy_store_source_type = if ($null -eq $rule.PolicyStoreSourceType) { $null } else { $rule.PolicyStoreSourceType.ToString() }
             policy_store_source = if ($null -eq $rule.PolicyStoreSource) { $null } else { $rule.PolicyStoreSource.ToString() }
+            owner = if ($null -eq $rule.Owner) { $null } else { $rule.Owner.ToString() }
+            primary_status = if ($null -eq $rule.PrimaryStatus) { $null } else { $rule.PrimaryStatus.ToString() }
+            status = if ($null -eq $rule.Status) { $null } else { $rule.Status.ToString() }
+            loose_source_mapping = To-NullableBool $rule.LooseSourceMapping
+            local_only_mapping = To-NullableBool $rule.LocalOnlyMapping
             protocol = @(To-StringArray ($port | ForEach-Object { $_.Protocol }))
             local_ports = @(To-StringArray ($port | ForEach-Object { $_.LocalPort }))
             remote_ports = @(To-StringArray ($port | ForEach-Object { $_.RemotePort }))
+            icmp_types = @(To-StringArray ($port | ForEach-Object { $_.IcmpType }))
+            dynamic_targets = @(To-StringArray ($port | ForEach-Object {
+                if ($null -ne $_.DynamicTarget) { $_.DynamicTarget }
+                elseif ($null -ne $_.DynamicTransport) { $_.DynamicTransport }
+            }))
             local_addresses = @(To-StringArray ($address | ForEach-Object { $_.LocalAddress }))
             remote_addresses = @(To-StringArray ($address | ForEach-Object { $_.RemoteAddress }))
             programs = @(To-StringArray ($application | ForEach-Object { $_.Program }))
@@ -127,6 +178,12 @@ $records = @(
             services = @(To-StringArray ($service | ForEach-Object { $_.Service }))
             interface_types = @(To-StringArray ($interfaceType | ForEach-Object { $_.InterfaceType }))
             interface_aliases = @(To-StringArray ($interface | ForEach-Object { $_.InterfaceAlias }))
+            authentication = @(To-StringArray ($security | ForEach-Object { $_.Authentication }))
+            encryption = @(To-StringArray ($security | ForEach-Object { $_.Encryption }))
+            override_block_rules = @(To-StringArray ($security | ForEach-Object { $_.OverrideBlockRules }))
+            local_users = @(To-StringArray ($security | ForEach-Object { $_.LocalUser }))
+            remote_users = @(To-StringArray ($security | ForEach-Object { $_.RemoteUser }))
+            remote_machines = @(To-StringArray ($security | ForEach-Object { $_.RemoteMachine }))
         }
     }
 )
@@ -159,6 +216,14 @@ def _optional_text(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise TypeError("optional firewall rule boolean fields must remain booleans")
+    return value
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:
@@ -195,9 +260,16 @@ def parse_windows_firewall_rule_inventory(raw: str) -> WindowsFirewallRuleInvent
                     policy_store_source=_optional_text(
                         record.get("policy_store_source")
                     ),
+                    owner=_optional_text(record.get("owner")),
+                    primary_status=_optional_text(record.get("primary_status")),
+                    status=_optional_text(record.get("status")),
+                    loose_source_mapping=_optional_bool(record.get("loose_source_mapping")),
+                    local_only_mapping=_optional_bool(record.get("local_only_mapping")),
                     protocol=_string_tuple(record.get("protocol")),
                     local_ports=_string_tuple(record.get("local_ports")),
                     remote_ports=_string_tuple(record.get("remote_ports")),
+                    icmp_types=_string_tuple(record.get("icmp_types")),
+                    dynamic_targets=_string_tuple(record.get("dynamic_targets")),
                     local_addresses=_string_tuple(record.get("local_addresses")),
                     remote_addresses=_string_tuple(record.get("remote_addresses")),
                     programs=_string_tuple(record.get("programs")),
@@ -205,6 +277,12 @@ def parse_windows_firewall_rule_inventory(raw: str) -> WindowsFirewallRuleInvent
                     services=_string_tuple(record.get("services")),
                     interface_types=_string_tuple(record.get("interface_types")),
                     interface_aliases=_string_tuple(record.get("interface_aliases")),
+                    authentication=_string_tuple(record.get("authentication")),
+                    encryption=_string_tuple(record.get("encryption")),
+                    override_block_rules=_string_tuple(record.get("override_block_rules")),
+                    local_users=_string_tuple(record.get("local_users")),
+                    remote_users=_string_tuple(record.get("remote_users")),
+                    remote_machines=_string_tuple(record.get("remote_machines")),
                 )
                 for record in _records(payload.get("rules"))
             ),
